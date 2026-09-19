@@ -12,7 +12,7 @@
 
 [![PC 端界面](screenshots/pc-main.jpg)](screenshots/pc-main.jpg)
 
-*PC 端主界面：Live2D 虚拟形象 + 语音对话 + 屏幕共享*
+*PC 端主界面：Live2D 虚拟形象 · 人设 / 形象 / 声音 / 提醒 四栏设置 · 语音与文字双模输入*
 
 </div>
 
@@ -43,10 +43,10 @@
 
 ## 👀 效果演示
 
-| 手机端 App | 语音与动作 |
+| 手机端 App | PC 端界面 |
 |:---:|:---:|
-| [![手机端](screenshots/android-app.jpg)](screenshots/android-app.jpg) | [![PC](screenshots/pc-main.jpg)](screenshots/pc-main.jpg) |
-| 竖屏 Live2D + 悬浮控制条 | 实时语音对话 + 口型动作同步 |
+| [![手机端](screenshots/android-app.jpg)](screenshots/android-app.jpg) | [![PC 端](screenshots/pc-main.jpg)](screenshots/pc-main.jpg) |
+| 竖屏 Live2D + 悬浮控制条 | Live2D 形象 · 会话列表 · 语音与文字双模输入 |
 
 ## 🏗️ 系统架构
 
