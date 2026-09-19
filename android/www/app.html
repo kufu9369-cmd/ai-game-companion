@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Open-LLM-Vtuber</title>
+    <script type="module" crossorigin src="./assets/main-nu7uwxNJ.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/main-QEkl09-0.css">
+
+    <script>
+      // === AI游戏搭子 原生桥（App WebView 提供 AndroidBridge） ===
+
+      // 历史存储：App 通过 AndroidBridge.saveMessage() 保存对话
+      window.__saveHistory = function (role, text) {
+        try {
+          if (window.AndroidBridge && window.AndroidBridge.saveMessage) {
+            window.AndroidBridge.saveMessage(role, text);
+          }
+        } catch (e) {}
+      };
+
+      // 屏幕共享：App 通过 AndroidBridge.getLatestFrame() 暴露截图，定期发送给电脑 AI
+      window.__sendScreenFrame = function (base64Jpeg) {
+        try {
+          if (!window.__gcScreenWs) {
+            var host = location.host;
+            var token = new URLSearchParams(location.search).get('token') || '';
+            var wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/client-ws'
+              + (token ? '?token=' + token : '');
+            window.__gcScreenWs = new WebSocket(wsUrl);
+            window.__gcScreenWs.onopen = function () { sendIt(base64Jpeg); };
+            window.__gcScreenWs.onclose = function () { window.__gcScreenWs = null; };
+          } else if (window.__gcScreenWs.readyState === 1) {
+            sendIt(base64Jpeg);
+          }
+          function sendIt(b64) {
+            window.__gcScreenWs.send(JSON.stringify({
+              type: 'text-input',
+              text: '（我共享了手机屏幕，请看画面）',
+              images: ['data:image/jpeg;base64,' + b64]
+            }));
+          }
+        } catch (e) {}
+      };
+
+      // 定期从原生桥读取最新截图并发送
+      (function () {
+        window.__lastSentFrame = '';
+        window.__gcScreenPoller = setInterval(function () {
+          try {
+            if (window.AndroidBridge && window.AndroidBridge.getLatestFrame) {
+              var f = window.AndroidBridge.getLatestFrame();
+              if (f && f.length > 100 && f !== window.__lastSentFrame) {
+                window.__lastSentFrame = f;
+                window.__sendScreenFrame(f);
+              }
+            }
+          } catch (e) {}
+        }, 4000);
+      })();
+
+      // 自动记录对话到本地历史：监听 chatscope 消息变化（cs-message--outgoing/incoming）
+      (function () {
+        if (window.__gcHistObs) return;
+        window.__gcHistObs = true;
+        var seen = {};
+        function tryRecord() {
+          try {
+            if (!window.__saveHistory) return;
+            var msgs = document.querySelectorAll('.cs-message--outgoing, .cs-message--incoming');
+            if (!msgs || msgs.length === 0) return;
+            for (var i = 0; i < msgs.length; i++) {
+              var m = msgs[i];
+              var textEl = m.querySelector('.cs-message__text');
+              if (!textEl) continue;
+              var text = (textEl.textContent || '').trim();
+              if (!text) continue;
+              var isOutgoing = m.className.indexOf('outgoing') >= 0;
+              var key = text + (isOutgoing ? '|u' : '|a');
+              if (seen[key]) continue;
+              seen[key] = true;
+              window.__saveHistory(isOutgoing ? 'user' : 'ai', text.slice(0, 500));
+            }
+          } catch (e) {}
+        }
+        setInterval(tryRecord, 1200);
+        document.addEventListener('DOMNodeInserted', tryRecord);
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

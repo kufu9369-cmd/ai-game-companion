@@ -1,0 +1,97 @@
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+py_modules/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============ 模型文件（体积大，按教程单独下载）============
+models/
+live2d-models/
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+*.ckpt
+*.gguf
+backend/frontend/libs/
+android/www/libs/
+android/app/src/main/assets/public/libs/
+
+# ============ 运行数据（含隐私，绝不入库）============
+chat_history/
+logs/
+cache/
+game_companion/data/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+upgrade_codes/
+temp/
+tmp/
+
+# ============ 证书与密钥 ============
+ssl/
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.jks
+*.keystore
+secrets.json
+
+# ============ 音频与语音样本 ============
+tts_voices/
+*.wav
+*.mp3
+*.m4a
+
+# ============ 前端 / Node ============
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+package-lock.json
+
+# ============ 安卓 / Gradle ============
+.gradle/
+build/
+local.properties
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+output-metadata.json
+
+# ============ 编辑器 / 系统 ============
+.idea/
+.vscode/
+.cursor/
+.gemini/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============ 备份文件 ============
+*.bak
+*.bak-*
+*.orig
+*.old
+*~

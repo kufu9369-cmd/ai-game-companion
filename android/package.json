@@ -1,0 +1,22 @@
+{
+  "name": "ai-game-companion-mobile",
+  "version": "0.1.0",
+  "description": "AI 游戏搭子 - 安卓手机端（Capacitor）",
+  "main": "index.js",
+  "author": "kufu9369-cmd",
+  "license": "MIT",
+  "scripts": {
+    "build": "npm run sync",
+    "sync": "cap copy android && cap sync android",
+    "add:android": "cap add android",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "typescript": "^5.5.4"
+  }
+}

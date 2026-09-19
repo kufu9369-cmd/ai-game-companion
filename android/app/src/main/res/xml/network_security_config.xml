@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 局域网连接安全策略
+
+     1) cleartextTrafficPermitted=true：放行明文 HTTP/WebSocket（电脑后端 http://IP:12393，
+        IP 每次可能变化，所以用 base-config 全放行；仅用于家庭/教室可信局域网）。
+
+     2) trust-anchors：额外信任随包内置的本地 CA（res/raw/gc_ca.crt）。
+        电脑后端用该 CA 签发的证书提供 HTTPS（https://IP:12394 / wss://IP:12394）。
+        *** 这是手机端"语音"和"屏幕共享"能用的关键 ***：
+        Android WebView 只有在 secure context（HTTPS/localhost）下才提供
+        navigator.mediaDevices.getUserMedia / getDisplayMedia。
+        而且 WebSocket 的 TLS 校验失败**不会**回调 onReceivedSslError，
+        只能靠把 CA 设成信任锚来消除校验失败（此前 HTTPS/WSS 走不通的根因）。
+
+        注意：证书里不含 IP 时才会走到 onReceivedSslError；这里做主信任，
+        另外保留 user + system 以兼容用户自行安装证书的场景。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+            <certificates src="@raw/gc_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

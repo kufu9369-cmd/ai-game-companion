@@ -1,0 +1,42 @@
+# 统一换行符，避免跨平台协作时整个文件被标记为修改
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则 cmd 解析会出问题
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本保持 LF
+*.sh text eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.webp binary
+*.jar binary
+*.apk binary
+*.wasm binary
+*.wav binary
+*.mp3 binary
+*.db binary
+
+# 文本类明确标记
+*.py text
+*.java text
+*.kt text
+*.ts text
+*.js text
+*.html text
+*.css text
+*.json text
+*.yaml text
+*.yml text
+*.md text
+*.svg text
+*.xml text
+
+# 让 GitHub 正确统计语言
+*.svg linguist-documentation
+docs/* linguist-documentation

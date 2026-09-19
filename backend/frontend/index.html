@@ -1,0 +1,778 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Open-LLM-Vtuber</title>
+
+    <!-- ============================================================
+         AI 游戏搭子 · 前端增强补丁（改这里即可，无需重新打包 APK）
+         1) WebSocket 断线自动重连
+         2) 屏幕共享 v2：用户消息自动附带当前画面 + 低频主动推送
+         ============================================================ -->
+    <script>
+      /* ---------- 1) WebSocket 断线自动重连 ----------
+         原版 bundle 的 onclose/onerror 只把状态置成 CLOSED，不做重连，
+         断线后永远停在"点击重新连接"，表现为"说话没反应"。 */
+      (function () {
+        if (window.__gcAutoReconnect) return;
+        window.__gcAutoReconnect = true;
+
+        var failTicks = 0;
+        var TICK_MS = 2000;
+        var FAIL_TICKS = 2;      // 连续约 4 秒非 OPEN 才重连
+
+        function wsUrl() {
+          var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+          return proto + location.host + '/client-ws' + (location.search || '');
+        }
+
+        function ensureUrl(svc) {
+          if (!svc.__gcLastUrl) svc.__gcLastUrl = wsUrl();
+          if (!svc.__gcPatched) {
+            svc.__gcPatched = true;
+            var orig = svc.connect;
+            svc.connect = function (u) {
+              try { if (u) this.__gcLastUrl = u; } catch (e) {}
+              return orig.apply(this, arguments);
+            };
+          }
+        }
+
+        setInterval(function () {
+          try {
+            var svc = window.__gcWsService;
+            if (!svc || !svc.ws) return;
+            ensureUrl(svc);
+            if (svc.ws.readyState === 1) { failTicks = 0; return; }
+            failTicks++;
+            if (failTicks >= FAIL_TICKS) {
+              failTicks = 0;
+              console.log('[GC-AUTO] WebSocket 非 OPEN，正在重连：' + svc.__gcLastUrl);
+              svc.connect(svc.__gcLastUrl);
+            }
+          } catch (e) {}
+        }, TICK_MS);
+      })();
+
+      /* ---------- 2) 屏幕共享 v2 ---------- */
+      (function () {
+        if (window.__gcScreenV2) return;
+        window.__gcScreenV2 = true;
+
+        // 抢占原生屏幕注入（MainActivity 的 SCREEN_SHARE_INJECT_JS 见到此标记会直接退出），
+        // 避免两套逻辑同时推送。
+        window.__gcScreenInjected = 1;
+
+        // ===== 可调参数 =====
+        // 主动推送间隔（毫秒）。**默认 0 = 关闭**。
+        // 原因：Agent 自己已有"主动开口"机制（conf.yaml 里
+        //   proactive_speak_enabled / proactive_idle_seconds=300 / proactive_cooldown_seconds=900），
+        //   再定时推屏会绕过这套冷却，表现为【没跟它说话它却一直自言自语】。
+        // 想让露露偶尔就画面主动搭话，把它设成 300000（5 分钟）以上。
+        var PROACTIVE_MS = 0;
+        var ATTACH_TO_USER = true;  // 用户每次发消息时自动附带当前画面
+        var JPEG_MIN_LEN = 100;     // 认为"有有效帧"的最小 base64 长度
+        // ====================
+
+        var lastSent = '';
+
+        function latestFrame() {
+          try {
+            if (window.AndroidBridge && window.AndroidBridge.getLatestFrame) {
+              var f = window.AndroidBridge.getLatestFrame();
+              if (f && f.length > JPEG_MIN_LEN) return f;
+            }
+          } catch (e) {}
+          return null;
+        }
+
+        function imgObj(b64) {
+          // 后端 create_batch_input 要求对象数组
+          return { source: 'screen', data: 'data:image/jpeg;base64,' + b64, mime_type: 'image/jpeg' };
+        }
+
+        function rawWs() {
+          try {
+            var s = window.__gcWsService;
+            if (!s) return null;
+            if (s.ws && s.ws.readyState === 1) return s.ws;
+            if (s.readyState === 1 && typeof s.send === 'function') return s;
+            return s.ws || null;
+          } catch (e) { return null; }
+        }
+
+        // ---- A) 每条用户消息自动带上"此刻的屏幕" ----
+        // 这样你问"我屏幕上是什么"时，AI 上下文里永远有最新画面，
+        // 而且不会额外产生对话、不会刷屏。
+        if (ATTACH_TO_USER) {
+          try {
+            var origSend = WebSocket.prototype.send;
+            WebSocket.prototype.send = function (data) {
+              try {
+                if (typeof data === 'string' && data.indexOf('text-input') >= 0) {
+                  var o = JSON.parse(data);
+                  if (o && o.type === 'text-input' && (!o.images || !o.images.length)) {
+                    var f = latestFrame();
+                    if (f) {
+                      o.images = [imgObj(f)];
+                      data = JSON.stringify(o);
+                      try { window.AndroidBridge.log('SCREEN', 'attached frame to user msg len=' + f.length); } catch (e) {}
+                    }
+                  }
+                }
+              } catch (e) {}
+              return origSend.call(this, data);
+            };
+          } catch (e) {}
+        }
+
+        // ---- B) 低频主动推送（让露露能自己开口）----
+        if (PROACTIVE_MS > 0) {
+          setInterval(function () {
+            try {
+              var f = latestFrame();
+              if (!f || f === lastSent) return;   // 画面没变就不打扰
+              var w = rawWs();
+              if (!w || w.readyState !== 1) return;
+              lastSent = f;
+              w.send(JSON.stringify({
+                type: 'text-input',
+                text: '（系统定时推送：这是我当前的手机屏幕截图。'
+                    + '如果画面里没有值得你主动开口的新内容，请只回复一个英文句号"."即可，不要出声；'
+                    + '如果有值得聊的，就自然地说一句。）',
+                images: [imgObj(f)]
+              }));
+              try { window.AndroidBridge.log('SCREEN', 'proactive push len=' + f.length); } catch (e) {}
+            } catch (e) {}
+          }, PROACTIVE_MS);
+        }
+      })();
+
+      /* ---------- 2.5) VAD 灵敏度预设（一次性写入，只写一次）----------
+         症状：玩游戏时环境音/游戏音被 VAD 当成"人声" → 每 1~4 秒就 "Real speech confirmed"
+         → 触发 barge-in 打断 → 露露刚开头就被打断，甚至整轮对话被 cancel
+         → 用户感觉「说完话他没有任何回答，过一两分钟才回」。
+         这里把阈值调高：需要更像人声、更长的语音才算说话。
+         只写一次（用 gcVadTuned 标记），之后你在设置面板里改的参数不会被覆盖。 */
+      (function () {
+        try {
+          if (localStorage.getItem('gcVadTuned')) return;      // 已写过 → 尊重用户后续的修改
+          localStorage.setItem('vadSettings', JSON.stringify({
+            positiveSpeechThreshold: 62,   // 默认 50：抬起说话判定门槛
+            negativeSpeechThreshold: 45,   // 默认 35
+            redemptionFrames: 30           // 默认 35
+          }));
+          localStorage.setItem('gcVadTuned', '1');
+        } catch (e) {}
+      })();
+
+      /* ---------- 3) 悬浮窗(pet)模式：只显示画面，不收音 ----------
+         悬浮窗 WebView 加载的是同一个页面，会独立连 WS 并启动【第二路 VAD 麦克风】。
+         后果：主界面点了关麦，悬浮窗那一路还在收音，用户感觉「话筒点了没用」；
+         而且两路都会把语音送去识别。
+         解决：pet 模式下把 getUserMedia 换成「静音 MediaStream」——
+         VAD 照常初始化，但永远检测不到语音，从而彻底消除双路收音。 */
+      (function () {
+        if (!/[?&]pet=1(?:&|$)/.test(location.search)) return;
+        if (window.__gcPet) return;
+        window.__gcPet = true;
+        console.log('[GC-PET] 悬浮窗模式：麦克风已禁用（改用静音流）');
+        try {
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            var _silence = null;
+            function silenceStream() {
+              if (_silence) return _silence;
+              var AC = window.AudioContext || window.webkitAudioContext;
+              if (!AC) return null;
+              var ac = new AC();
+              var dest = ac.createMediaStreamDestination(); // 不接任何音源 = 纯静音
+              _silence = dest.stream;
+              return _silence;
+            }
+            navigator.mediaDevices.getUserMedia = function () {
+              var s = silenceStream();
+              if (s) return Promise.resolve(s);
+              return Promise.reject(new Error('pet mode: microphone disabled'));
+            };
+          }
+        } catch (e) {}
+      })();
+
+      /* ---------- 4) 把对话同步进 App 本地聊天记录 ----------
+         App 右下角 🕐 打开的是原生对话框，读的是 ChatHistory 本地 JSON；
+         但前端 bundle 从不调用 AndroidBridge.saveMessage，所以永远显示「暂无聊天记录」。
+         这里 hook WebSocket 的收/发，把双方对话写进本地历史。 */
+      (function () {
+        if (window.__gcPet) return;   // 悬浮窗只显示，避免重复记录
+        if (!window.AndroidBridge || !window.AndroidBridge.saveMessage) return;
+        if (window.__gcHistorySync) return;
+        window.__gcHistorySync = true;
+
+        var lastRole = '', lastText = '', lastAt = 0;
+        // 去掉 Live2D 表情标签（如 [smirk]）与多余空白
+        function clean(text) {
+          return String(text).replace(/\[[a-zA-Z_]+\]/g, ' ')
+                     .replace(/\s+/g, ' ').trim();
+        }
+        function save(role, text) {
+          try {
+            text = clean(text);
+            if (!text) return;
+            var now = Date.now();
+            // 去重：3 秒内同样的内容不重复写（防同一条消息走两条路径）
+            if (role === lastRole && text === lastText && now - lastAt < 3000) return;
+            lastRole = role; lastText = text; lastAt = now;
+            window.AndroidBridge.saveMessage(role, text);
+          } catch (e) {}
+        }
+
+        // AI 的一次回复会被按标点切成多句，每句一条 audio 消息。
+        // 这里缓冲 2 秒合并成一条再存，免得聊天记录里全是碎句。
+        var pendAi = '', pendTimer = null;
+        function flushAi() {
+          if (!pendAi) return;
+          var t = pendAi;
+          pendAi = '';
+          if (pendTimer) { clearTimeout(pendTimer); pendTimer = null; }
+          save('ai', t);
+        }
+        function queueAi(text) {
+          var t = clean(text);
+          if (!t) return;
+          pendAi = pendAi ? (pendAi + t) : t;
+          if (pendTimer) clearTimeout(pendTimer);
+          // 6 秒兜底：正常情况下由 conversation-chain-end 提前触发 flush
+          pendTimer = setTimeout(flushAi, 6000);
+        }
+
+        function handle(payload) {
+          try {
+            var o = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            if (!o || !o.type) return;
+            if (o.type === 'user-input-transcription' && o.text) {
+              flushAi();                            // 用户插话前先把上一条 AI 回复落地
+              save('user', o.text);                 // 语音识别出来的用户话
+            } else if (o.type === 'audio') {
+              var dt = o.display_text;              // AI 这句话的文本
+              if (dt && dt.text) queueAi(dt.text);
+            } else if (o.type === 'conversation-chain-end') {
+              flushAi();                            // 一轮回复结束 → 立刻合并成一条落地
+            }
+          } catch (e) {}
+        }
+
+        // hook 接收：onmessage 赋值 与 addEventListener 两种用法都覆盖
+        try {
+          var od = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage');
+          if (od && od.set) {
+            Object.defineProperty(WebSocket.prototype, 'onmessage', {
+              configurable: true,
+              enumerable: od.enumerable,
+              get: function () { return od.get.call(this); },
+              set: function (fn) {
+                od.set.call(this, function (ev) {
+                  try { handle(ev && ev.data); } catch (e) {}
+                  return fn.apply(this, arguments);
+                });
+              }
+            });
+          }
+          var oadd = WebSocket.prototype.addEventListener;
+          WebSocket.prototype.addEventListener = function (type, listener, opts) {
+            if (type === 'message' && typeof listener === 'function') {
+              var wrapped = function (ev) {
+                try { handle(ev && ev.data); } catch (e) {}
+                return listener.apply(this, arguments);
+              };
+              return oadd.call(this, type, wrapped, opts);
+            }
+            return oadd.call(this, type, listener, opts);
+          };
+        } catch (e) {}
+
+        // hook 发送：用户打字发的消息
+        try {
+          var osend = WebSocket.prototype.send;
+          WebSocket.prototype.send = function (data) {
+            try {
+              if (typeof data === 'string' && data.indexOf('"text-input"') >= 0) {
+                var o = JSON.parse(data);
+                if (o && o.type === 'text-input' && o.text) { flushAi(); save('user', o.text); }
+              }
+            } catch (e) {}
+            return osend.call(this, data);
+          };
+        } catch (e) {}
+      })();
+
+      /* ---------- 5) 麦克风开关：悬浮窗按钮 ↔ 主界面麦克风按钮 双向同步 ----------
+         悬浮窗那个按钮只能改原生的 MicSync 请求；真正开/关麦克风得由网页来做。
+         协议：原生只下发「一次性请求（带序号）」，网页执行后 ACK；
+               网页持续上报 localStorage.micOn —— 它与 App 内麦克风按钮同源，
+               所以悬浮窗图标和 App 按钮永远一致。
+         （旧版用 getMicWant() 布尔值持续比对：上报会覆盖请求，两边互相打架） */
+      (function () {
+        if (window.__gcPet) return;   // 悬浮窗不参与，避免两个 WebView 互相打架
+        if (window.__gcMicSync) return;
+        if (!window.AndroidBridge || !window.AndroidBridge.getMicReqSeq) return;
+        window.__gcMicSync = true;
+
+        // 状态判据：**localStorage.micOn**。
+        // 这正是 App 内那个麦克风按钮自己渲染所依据的状态（VADProvider 里 useLocalStorage("micOn")），
+        // 用它当判据 → 悬浮窗图标与 App 按钮在定义上就不可能不一致。
+        // 踩过的坑（都已弃用）：
+        //  1) hook console.log 抓 "Starting VAD"/"Stopping VAD" —— Capacitor 的 Console 桥会替换 console；
+        //  2) 按钮底色 —— 主题/状态一变就不可靠；
+        //  3) getUserMedia 乐观上报 —— 初始化失败时会谎报"已开"。
+        var lastReported = null;
+        var lastAckSeq = 0;
+
+        function report(on) {
+          try { if (window.AndroidBridge.reportMic) window.AndroidBridge.reportMic(on); } catch (e) {}
+        }
+
+        function micOn() {
+          try {
+            var v = localStorage.getItem('micOn');
+            return v === null ? null : (v === 'true');
+          } catch (e) { return null; }
+        }
+
+        function micButton() {
+          var b = document.querySelector('[aria-label="Toggle microphone"]');
+          if (b) return b;
+          var btns = document.querySelectorAll('button');
+          for (var i = 0; i < btns.length; i++) {
+            var r = btns[i].getBoundingClientRect();
+            // 底部工具条最左侧那个就是麦克风（CSS 像素，设备高 2712/3≈904）
+            if (r.top > 780 && r.top < 900 && r.left < 40) return btns[i];
+          }
+          return null;
+        }
+
+        setInterval(function () {
+          try {
+            // A) 上报真实状态（与 App 内按钮同源）→ 悬浮窗图标跟随
+            var on = micOn();
+            if (on !== null && on !== lastReported) {
+              lastReported = on;
+              report(on);
+            }
+
+            // B) 应用原生的一次性请求（带序号，执行后 ACK，绝不反复点）
+            var seq = window.AndroidBridge.getMicReqSeq();
+            if (seq > lastAckSeq) {
+              lastAckSeq = seq;
+              var want = window.AndroidBridge.getMicReqValue();
+              if (on !== null && on !== !!want) {
+                var b = micButton();
+                if (b) {
+                  b.click();
+                  console.log('[GC-MIC] 应用原生请求 -> ' + want);
+                }
+              }
+              try { if (window.AndroidBridge.ackMicReq) window.AndroidBridge.ackMicReq(seq); } catch (e) {}
+            }
+          } catch (e) {}
+        }, 600);
+      })();
+
+      /* ---------- 6) 人设 & 形象 双库切换面板 ----------
+         人设（性格/声音）与形象（Live2D 外观）解耦，可独立选择：
+           · 人设走 switch-config（characters/ 目录的角色卡）
+           · 形象走 switch-model（model_dict.json 的模型库，只换皮不换人）
+         悬浮窗(pet)模式不放。 */
+      (function () {
+        if (window.__gcPet) return;
+        if (window.__gcCharPicker) return;
+        window.__gcCharPicker = true;
+
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;top:8px;right:8px;z-index:99999;font-size:12px;'
+          + 'background:rgba(15,18,30,.55);backdrop-filter:blur(4px);border-radius:10px;'
+          + 'padding:4px 6px;color:#fff;user-select:none;max-width:52vw;box-shadow:0 2px 10px rgba(0,0,0,.25);';
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;align-items:center;justify-content:flex-end;';
+        var btn = document.createElement('div');
+        btn.textContent = '🎭 人设 / 👗 形象 / 🎙 声音';
+        btn.style.cssText = 'cursor:pointer;padding:2px 6px;font-weight:600;';
+        var rbtn = document.createElement('div');
+        rbtn.textContent = '⏰ 提醒';
+        rbtn.style.cssText = 'cursor:pointer;padding:2px 6px;font-weight:600;';
+        row.appendChild(btn); row.appendChild(rbtn);
+        var panel = document.createElement('div');
+        panel.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 2px;max-height:70vh;overflow-y:auto;';
+        var rpanel = document.createElement('div');
+        rpanel.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 2px;max-height:70vh;overflow-y:auto;';
+        wrap.appendChild(row); wrap.appendChild(panel); wrap.appendChild(rpanel);
+        document.documentElement.appendChild(wrap);
+
+        var opened = false;
+
+        function ws() {
+          try {
+            var s = window.__gcWsService;
+            if (s && s.ws && s.ws.readyState === 1) return s.ws;
+            if (s && s.readyState === 1 && typeof s.send === 'function') return s;
+          } catch (e) {}
+          return null;
+        }
+
+        function sectionTitle(text) {
+          var t = document.createElement('div');
+          t.textContent = text;
+          t.style.cssText = 'opacity:.75;font-weight:600;padding:2px 4px 0;';
+          return t;
+        }
+
+        function addRow(parent, display, hint, onclick) {
+          var row = document.createElement('div');
+          row.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;'
+            + 'background:rgba(255,255,255,.08);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+          var main = document.createElement('span');
+          main.textContent = display;
+          row.appendChild(main);
+          if (hint) {
+            var h = document.createElement('span');
+            h.textContent = ' ' + hint;
+            h.style.cssText = 'opacity:.55;font-size:10px';
+            row.appendChild(h);
+          }
+          row.onmouseenter = function () { row.style.background = 'rgba(255,255,255,.22)'; };
+          row.onmouseleave = function () { row.style.background = 'rgba(255,255,255,.08)'; };
+          row.onclick = onclick;
+          parent.appendChild(row);
+        }
+
+        function addHint(parent, text) {
+          var d = document.createElement('div');
+          d.textContent = text;
+          d.style.cssText = 'opacity:.55;padding:2px 8px;';
+          parent.appendChild(d);
+        }
+
+        function closePanel() { panel.style.display = 'none'; opened = false; }
+        function closeRPanel() { rpanel.style.display = 'none'; ropened = false; }
+
+        btn.onclick = function () {
+          opened = !opened;
+          panel.style.display = opened ? 'flex' : 'none';
+          if (opened) closeRPanel();
+          if (opened) {
+            var s = ws();
+            if (s) {
+              s.send(JSON.stringify({ type: 'fetch-configs' }));
+              s.send(JSON.stringify({ type: 'fetch-models' }));
+              s.send(JSON.stringify({ type: 'fetch-voices' }));
+            }
+          }
+        };
+
+        var ropened = false;
+        rbtn.onclick = function () {
+          ropened = !ropened;
+          rpanel.style.display = ropened ? 'flex' : 'none';
+          if (ropened) {
+            closePanel();
+            renderRPanel();  // 立即渲染，不等网络
+            var s = ws();
+            if (s) s.send(JSON.stringify({ type: 'reminder-list' }));
+          }
+        };
+
+        /* ---------- 状态驱动：四个列表都存 state，任何更新都整体重绘一次 ---------- */
+        var state = { configs: null, models: null, voices: null, currentVoice: null, reminders: null };
+        var renderTimer = null;
+
+        function scheduleRender() {
+          if (renderTimer) clearTimeout(renderTimer);
+          renderTimer = setTimeout(renderPanel, 60);
+        }
+
+        function renderPanel() {
+          renderTimer = null;
+          panel.innerHTML = '';
+
+          panel.appendChild(sectionTitle('人设（性格 · 声音）'));
+          if (state.configs && state.configs.length) {
+            state.configs.forEach(function (c) {
+              var file = (typeof c === 'string') ? c : (c.filename || c.file || '');
+              var name = (typeof c === 'string') ? c : (c.name || c.filename || c.file || file);
+              if (!file) return;
+              addRow(panel, '🎭 ' + name, '', function () {
+                var s = ws(); if (!s) return;
+                s.send(JSON.stringify({ type: 'switch-config', file: file }));
+                closePanel();
+                console.log('[GC-CHAR] 切换人设 -> ' + file);
+              });
+            });
+          } else {
+            addHint(panel, state.configs ? '（无）' : '加载中…');
+          }
+
+          panel.appendChild(sectionTitle('形象（外观模型）'));
+          if (state.models && state.models.length) {
+            state.models.forEach(function (m) {
+              if (!m.name) return;
+              addRow(panel, '👗 ' + m.name, m.description || '', function () {
+                var s = ws(); if (!s) return;
+                s.send(JSON.stringify({ type: 'switch-model', model: m.name }));
+                closePanel();
+                console.log('[GC-MODEL] 切换形象 -> ' + m.name);
+              });
+            });
+          } else {
+            addHint(panel, state.models ? '（无）' : '加载中…');
+          }
+
+          panel.appendChild(sectionTitle('声音（克隆音色 · 点击切换）'));
+          if (state.voices && state.voices.length) {
+            state.voices.forEach(function (v) {
+              var mark = (v.name === state.currentVoice) ? ' ✓' : '';
+              addRow(panel, '🔊 ' + v.name + mark, '', function () {
+                var s = ws(); if (!s) return;
+                s.send(JSON.stringify({ type: 'switch-voice', name: v.name }));
+                console.log('[GC-VOICE] 切换声线 -> ' + v.name);
+              });
+            });
+          } else {
+            addHint(panel, state.voices ? '（无）' : '加载中…');
+          }
+          panel.appendChild(addVoiceControls());
+        }
+
+        function renderRPanel() {
+          rpanel.innerHTML = '';
+          rpanel.appendChild(sectionTitle('⏰ 定时提醒（到点她会主动开口）'));
+          if (!ws()) {
+            addHint(rpanel, '⚠️ 未连接后端——连上后提醒才会响，列表也会加载');
+          }
+          if (state.reminders && state.reminders.length) {
+            state.reminders.forEach(function (r) {
+              addRow(rpanel, '⏰ ' + (r.desc || r.fire_at) + ' — ' + r.text, '点我取消', function () {
+                var s = ws(); if (!s) return;
+                s.send(JSON.stringify({ type: 'reminder-cancel', id: r.id }));
+              });
+            });
+          } else {
+            addHint(rpanel, state.reminders ? '（暂无提醒）' : '加载中…');
+          }
+          rpanel.appendChild(addReminderControls());
+          addHint(rpanel, '循环提醒到点自动排下一次，点列表条目取消。也可以直接跟她说"每天8点提醒我…"');
+        }
+
+        function addReminderControls() {
+          var box = document.createElement('div');
+          box.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:4px 2px;';
+          var bar1 = document.createElement('div');
+          bar1.style.cssText = 'display:flex;gap:4px;';
+          var txt = document.createElement('input');
+          txt.placeholder = '提醒内容（如：查快递）';
+          txt.style.cssText = 'flex:1 1 100px;min-width:100px;padding:3px 6px;border-radius:6px;'
+            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
+          var tm = document.createElement('input');
+          tm.type = 'time';
+          tm.style.cssText = 'width:92px;padding:3px 4px;border-radius:6px;'
+            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
+          var min = document.createElement('input');
+          min.placeholder = '分钟';
+          min.type = 'number';
+          min.min = '0.5';
+          min.step = '0.5';
+          min.style.cssText = 'width:60px;padding:3px 6px;border-radius:6px;'
+            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
+          bar1.appendChild(txt); bar1.appendChild(tm); bar1.appendChild(min);
+          var bar2 = document.createElement('div');
+          bar2.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap;';
+          var mode = 'none';
+          var modeNames = { none: '单次', daily: '每天', weekly: '每周' };
+          var dayBar = document.createElement('div');
+          dayBar.style.cssText = 'display:none;gap:3px;flex-wrap:wrap;';
+          var picked = {};
+          [1,2,3,4,5,6,7].forEach(function (d) {
+            var c = document.createElement('div');
+            c.textContent = '周' + '一二三四五六日'[d - 1];
+            c.style.cssText = 'cursor:pointer;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.08);';
+            c.onclick = function () {
+              picked[d] = !picked[d];
+              c.style.background = picked[d] ? 'rgba(80,140,255,.45)' : 'rgba(255,255,255,.08)';
+            };
+            picked[d] = false;
+            dayBar.appendChild(c);
+          });
+          Object.keys(modeNames).forEach(function (m) {
+            var c = document.createElement('div');
+            c.textContent = modeNames[m];
+            c.dataset.m = m;
+            c.style.cssText = 'cursor:pointer;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.08);';
+            c.onclick = function () {
+              mode = m;
+              Array.prototype.forEach.call(bar2.children, function (x) {
+                if (x.dataset && x.dataset.m) {
+                  x.style.background = (x.dataset.m === m) ? 'rgba(80,140,255,.45)' : 'rgba(255,255,255,.08)';
+                }
+              });
+              dayBar.style.display = (m === 'weekly') ? 'flex' : 'none';
+            };
+            bar2.appendChild(c);
+          });
+          bar2.appendChild(dayBar);
+          var add = document.createElement('div');
+          add.textContent = '＋ 添加提醒';
+          add.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(80,140,255,.35);align-self:flex-start;';
+          add.onclick = function () {
+            var t = (txt.value || '').trim();
+            var s = ws(); if (!s) return;
+            if (!t) { add.textContent = '先填提醒内容'; setTimeout(function(){ add.textContent = '＋ 添加提醒'; }, 1500); return; }
+            var weekdays = Object.keys(picked).filter(function (d) { return picked[d]; }).join(',');
+            if (mode === 'weekly' && !weekdays) { add.textContent = '选星期几'; setTimeout(function(){ add.textContent = '＋ 添加提醒'; }, 1500); return; }
+            s.send(JSON.stringify({
+              type: 'reminder-add', text: t,
+              at_time: (mode !== 'none' || tm.value) ? (tm.value || '') : '',
+              delay_minutes: (!tm.value && mode === 'none') ? (parseFloat(min.value) || 0) : 0,
+              repeat: mode, weekdays: weekdays
+            }));
+            txt.value = '';
+          };
+          box.appendChild(bar1); box.appendChild(bar2); box.appendChild(add);
+          return box;
+        }
+
+        /* ---------- 声音克隆：录音 / 导入 → 转 24k 单声道 wav → save-voice ---------- */
+        function encodeWav(samples, sampleRate) {
+          var buf = new ArrayBuffer(44 + samples.length * 2);
+          var v = new DataView(buf);
+          function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
+          str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
+          str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+          v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+          v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+          str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+          for (var i = 0; i < samples.length; i++) {
+            var s = Math.max(-1, Math.min(1, samples[i]));
+            v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+          }
+          return buf;
+        }
+
+        function blobToVoiceWav(blob) {
+          return blob.arrayBuffer().then(function (ab) {
+            var ac = new (window.AudioContext || window.webkitAudioContext)();
+            return ac.decodeAudioData(ab).then(function (src) {
+              var dur = src.duration;
+              if (dur < 2) { ac.close(); throw new Error('音频太短（至少 2 秒，建议 3~10 秒）'); }
+              if (dur > 15) dur = 15;
+              var off = new OfflineAudioContext(1, Math.ceil(dur * 24000), 24000);
+              var node = off.createBufferSource();
+              node.buffer = src; node.connect(off.destination); node.start(0);
+              return off.startRendering().then(function (out) {
+                ac.close();
+                return encodeWav(out.getChannelData(0), 24000);
+              });
+            });
+          });
+        }
+
+        function askSaveVoice(wavBuf) {
+          var name = prompt('声线名字（例如：露露 / 御姐音 / 我的录音）：');
+          if (!name) return;
+          var text = prompt('参考音频里说的内容（一字不差地写下来，克隆质量关键）：');
+          if (!text) return;
+          var s = ws(); if (!s) return;
+          var bytes = new Uint8Array(wavBuf), bin = '';
+          for (var i = 0; i < bytes.length; i += 8192)
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+          s.send(JSON.stringify({
+            type: 'save-voice', name: name, text: text,
+            audio: btoa(bin)
+          }));
+          console.log('[GC-VOICE] 上传声线 -> ' + name);
+        }
+
+        function startRecord() {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('当前页面不支持麦克风'); return;
+          }
+          navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+            var rec = new MediaRecorder(stream);
+            var chunks = [];
+            rec.ondataavailable = function (e) { chunks.push(e.data); };
+            rec.onstop = function () {
+              stream.getTracks().forEach(function (t) { t.stop(); });
+              recBtn.textContent = '🎙 按住说话… 点击开始录音';
+              blobToVoiceWav(new Blob(chunks)).then(askSaveVoice)
+                .catch(function (e) { alert('录音处理失败: ' + e.message); });
+            };
+            rec.start();
+            recBtn.textContent = '⏺ 录音中… 点击结束';
+            recBtn.onclick = function () { rec.stop(); recBtn.onclick = startRecord; };
+          }).catch(function (e) { alert('麦克风打开失败: ' + e.message); });
+        }
+
+        var recBtn = null;
+        function addVoiceControls() {
+          var bar = document.createElement('div');
+          bar.style.cssText = 'display:flex;gap:4px;padding:4px 2px;flex-wrap:wrap;';
+          recBtn = document.createElement('div');
+          recBtn.textContent = '🎙 按住说话… 点击开始录音';
+          recBtn.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(80,200,120,.35);';
+          recBtn.onclick = startRecord;
+          var imp = document.createElement('div');
+          imp.textContent = '📁 导入音频';
+          imp.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,.12);';
+          var file = document.createElement('input');
+          file.type = 'file'; file.accept = 'audio/*'; file.style.display = 'none';
+          file.onchange = function () {
+            if (!file.files || !file.files[0]) return;
+            blobToVoiceWav(file.files[0]).then(askSaveVoice)
+              .catch(function (e) { alert('导入失败: ' + e.message); });
+            file.value = '';
+          };
+          imp.onclick = function () { file.click(); };
+          bar.appendChild(recBtn); bar.appendChild(imp); bar.appendChild(file);
+          return bar;
+        }
+
+        // 给每个新建的 WS 挂一个轻量监听：只更新 state，重绘交给 scheduleRender 统一做
+        var lastSock = null;
+        setInterval(function () {
+          var s = ws();
+          if (!s || s === lastSock) return;
+          lastSock = s;
+          s.addEventListener('message', function (ev) {
+            try {
+              if (typeof ev.data !== 'string' || ev.data.length > 8000) return;
+              if (ev.data.indexOf('"config-files"') < 0 && ev.data.indexOf('"model-list"') < 0
+                  && ev.data.indexOf('"voice-list"') < 0 && ev.data.indexOf('"voice-saved"') < 0
+                  && ev.data.indexOf('"voice-switched"') < 0 && ev.data.indexOf('"reminder-list"') < 0) return;
+              var o = JSON.parse(ev.data);
+              if (o.type === 'config-files' && o.configs) {
+                state.configs = o.configs;
+                scheduleRender();
+              } else if (o.type === 'model-list' && o.models) {
+                state.models = o.models;
+                scheduleRender();
+              } else if (o.type === 'voice-list' && o.voices) {
+                state.voices = o.voices;
+                state.currentVoice = o.current;
+                scheduleRender();
+              } else if (o.type === 'reminder-list') {
+                state.reminders = o.reminders || [];
+                scheduleRender();
+              } else if (o.type === 'voice-saved' || o.type === 'voice-switched') {
+                console.log('[GC-VOICE] ' + o.message);
+              }
+            } catch (e) {}
+          });
+        }, 1000);
+      })();
+    </script>
+
+    <script type="module" crossorigin src="./assets/main-nu7uwxNJ.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/main-QEkl09-0.css">
+  </head>
+
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

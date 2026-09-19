@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" height="560" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1420"/>
+      <stop offset="100%" stop-color="#1a2035"/>
+    </linearGradient>
+    <linearGradient id="client" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e88e5"/>
+      <stop offset="100%" stop-color="#1565c0"/>
+    </linearGradient>
+    <linearGradient id="server" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7c4dff"/>
+      <stop offset="100%" stop-color="#5e35b1"/>
+    </linearGradient>
+    <linearGradient id="model" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00897b"/>
+      <stop offset="100%" stop-color="#00695c"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#8fa4c8"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="560" fill="url(#bg)"/>
+
+  <text x="450" y="40" text-anchor="middle" fill="#e8ecf5" font-size="20" font-weight="700">AI 游戏搭子 · 系统架构</text>
+
+  <!-- 客户端 -->
+  <rect x="40" y="80" width="240" height="180" rx="12" fill="url(#client)" opacity="0.92"/>
+  <text x="160" y="108" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">客户端层</text>
+  <text x="160" y="136" text-anchor="middle" fill="#dce9ff" font-size="12.5">安卓 App（Capacitor + 原生 Java）</text>
+  <text x="160" y="160" text-anchor="middle" fill="#dce9ff" font-size="12.5">PC 端（Edge --app 独立窗口）</text>
+  <text x="160" y="188" text-anchor="middle" fill="#b9d4ff" font-size="11.5">前台服务 · 悬浮窗 · 屏幕共享</text>
+  <text x="160" y="208" text-anchor="middle" fill="#b9d4ff" font-size="11.5">麦克风同步 · 音频路由</text>
+  <text x="160" y="234" text-anchor="middle" fill="#9fc4ff" font-size="11">Live2D 渲染 + 语音交互</text>
+
+  <!-- 传输 -->
+  <rect x="330" y="130" width="120" height="80" rx="10" fill="#263449" stroke="#3d5271" stroke-width="1.5"/>
+  <text x="390" y="158" text-anchor="middle" fill="#cfe0ff" font-size="12.5" font-weight="600">WebSocket</text>
+  <text x="390" y="178" text-anchor="middle" fill="#9db3d4" font-size="11">音频流</text>
+  <text x="390" y="195" text-anchor="middle" fill="#9db3d4" font-size="11">文本 / 画面帧</text>
+
+  <line x1="280" y1="170" x2="326" y2="170" stroke="#8fa4c8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="454" y1="170" x2="500" y2="170" stroke="#8fa4c8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 后端 -->
+  <rect x="504" y="70" width="356" height="250" rx="12" fill="url(#server)" opacity="0.92"/>
+  <text x="682" y="98" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">后端服务层（Python）</text>
+
+  <rect x="524" y="112" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="599" y="132" text-anchor="middle" fill="#fff" font-size="12.5">语音识别 ASR</text>
+  <text x="599" y="149" text-anchor="middle" fill="#e0d4ff" font-size="10.5">SenseVoice</text>
+
+  <rect x="690" y="112" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="765" y="132" text-anchor="middle" fill="#fff" font-size="12.5">语音合成 TTS</text>
+  <text x="765" y="149" text-anchor="middle" fill="#e0d4ff" font-size="10.5">ZipVoice 声音克隆</text>
+
+  <rect x="524" y="170" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="599" y="190" text-anchor="middle" fill="#fff" font-size="12.5">对话 Agent</text>
+  <text x="599" y="207" text-anchor="middle" fill="#e0d4ff" font-size="10.5">人设 / 场景引擎</text>
+
+  <rect x="690" y="170" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="765" y="190" text-anchor="middle" fill="#fff" font-size="12.5">长期记忆</text>
+  <text x="765" y="207" text-anchor="middle" fill="#e0d4ff" font-size="10.5">提取 · 召回 · 提纯</text>
+
+  <rect x="524" y="228" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="599" y="248" text-anchor="middle" fill="#fff" font-size="12.5">MCP 工具调用</text>
+  <text x="599" y="265" text-anchor="middle" fill="#e0d4ff" font-size="10.5">读游戏状态 / 进程</text>
+
+  <rect x="690" y="228" width="150" height="46" rx="8" fill="#ffffff" opacity="0.14"/>
+  <text x="765" y="248" text-anchor="middle" fill="#fff" font-size="12.5">RAG 知识库</text>
+  <text x="765" y="265" text-anchor="middle" fill="#e0d4ff" font-size="10.5">向量检索</text>
+
+  <text x="682" y="302" text-anchor="middle" fill="#d4c4ff" font-size="11">HTTP 12393 · HTTPS 12394</text>
+
+  <!-- 模型层 -->
+  <rect x="230" y="390" width="440" height="120" rx="12" fill="url(#model)" opacity="0.92"/>
+  <text x="450" y="418" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">本地模型层（Ollama · 全程离线）</text>
+  <rect x="252" y="436" width="190" height="52" rx="8" fill="#ffffff" opacity="0.15"/>
+  <text x="347" y="457" text-anchor="middle" fill="#fff" font-size="12.5">多模态对话模型</text>
+  <text x="347" y="475" text-anchor="middle" fill="#c8f0ea" font-size="10.5">Qwen3-VL / Qwen2.5-VL</text>
+  <rect x="458" y="436" width="190" height="52" rx="8" fill="#ffffff" opacity="0.15"/>
+  <text x="553" y="457" text-anchor="middle" fill="#fff" font-size="12.5">向量模型</text>
+  <text x="553" y="475" text-anchor="middle" fill="#c8f0ea" font-size="10.5">bge-m3（记忆检索）</text>
+
+  <line x1="682" y1="320" x2="560" y2="386" stroke="#8fa4c8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 底部说明 -->
+  <text x="450" y="540" text-anchor="middle" fill="#6b7d99" font-size="11.5">音频 · 文本 · 画面帧全部走本机，不经过任何云端服务</text>
+</svg>

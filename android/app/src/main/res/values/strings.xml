@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AI游戏搭子</string>
+    <string name="title_activity_main">AI游戏搭子</string>
+    <string name="package_name">ai.game.companion.mobile</string>
+    <string name="custom_url_scheme">ai.game.companion.mobile</string>
+</resources>

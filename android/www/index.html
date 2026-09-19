@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>AI游戏搭子 · 连接设置</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: linear-gradient(160deg, #1e1b2e 0%, #2a2342 50%, #1a1a2e 100%);
+        min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        padding: 24px; color: #eee;
+      }
+      .card {
+        width: 100%; max-width: 420px; background: rgba(255,255,255,.06);
+        border: 1px solid rgba(255,255,255,.12); border-radius: 20px; padding: 28px 24px;
+        backdrop-filter: blur(12px); box-shadow: 0 20px 60px rgba(0,0,0,.4);
+      }
+      h1 { font-size: 22px; text-align: center; margin-bottom: 4px; }
+      .sub { text-align: center; color: #a9a3c0; font-size: 13px; margin-bottom: 24px; }
+      label { display: block; font-size: 13px; color: #c9c3dd; margin: 14px 0 6px; }
+      input {
+        width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.14);
+        background: rgba(0,0,0,.28); color: #eee; font-size: 15px; outline: none;
+      }
+      input:focus { border-color: #8b7cf6; }
+      button {
+        width: 100%; margin-top: 12px; padding: 13px; border: none; border-radius: 12px;
+        font-size: 15px; font-weight: 600; cursor: pointer;
+      }
+      #test { background: rgba(255,255,255,.12); color: #ddd; }
+      #save { background: linear-gradient(90deg, #7c5cf6, #b24cf6); color: #fff; }
+      #save:active, #test:active { opacity: .8; }
+      #status { margin-top: 14px; text-align: center; font-size: 13px; min-height: 18px; }
+      .hint { margin-top: 18px; font-size: 12px; color: #7e7a99; line-height: 1.6; }
+
+      /* 连接方式选择 */
+      .modes { display: flex; gap: 8px; }
+      .mode {
+        flex: 1; text-align: center; padding: 10px 4px; border-radius: 12px; cursor: pointer;
+        border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.22);
+        font-size: 13px; color: #c9c3dd; user-select: none;
+      }
+      .mode.on {
+        border-color: #8b7cf6; color: #fff;
+        background: linear-gradient(180deg, rgba(124,92,246,.35), rgba(178,76,246,.25));
+      }
+      .mode small { display: block; font-size: 10px; color: #8f8ab0; margin-top: 3px; }
+      .mode.on small { color: #cfc7ff; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>🕹️ AI 游戏搭子</h1>
+      <p class="sub">连接您电脑上的游戏搭子后端</p>
+
+      <label>连接方式</label>
+      <div class="modes" id="modes">
+        <div class="mode on" data-mode="auto">自动<small>推荐</small></div>
+        <div class="mode" data-mode="https">加密<small>语音/共享</small></div>
+        <div class="mode" data-mode="http">明文<small>仅文字</small></div>
+      </div>
+
+      <label>电脑局域网 IP</label>
+      <input id="ip" inputmode="numeric" placeholder="例如 192.168.1.101 或 10.20.114.166" autocomplete="off" />
+
+      <label>HTTP 端口（加密固定用 12394）</label>
+      <input id="port" inputmode="numeric" placeholder="12393" autocomplete="off" />
+
+      <label>访问口令</label>
+      <input id="token" placeholder="conf.yaml 中 access_token 的值" autocomplete="off" />
+
+      <button id="test">测试连接</button>
+      <button id="save">进入游戏搭子 →</button>
+      <div id="status"></div>
+
+      <div class="hint">
+        💡 手机和电脑连同一个 Wi-Fi 即可。<b>加密(HTTPS)</b> 才能用语音和屏幕共享。<br />
+        电脑端后端需已启动（会自动同时开 HTTP 12393 与 HTTPS 12394）。
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id)
+      const HTTPS_PORT = 12394
+      let mode = 'auto'
+
+      function setStatus(msg, ok) {
+        const el = $('status')
+        el.textContent = msg
+        el.style.color = ok === false ? '#f87171' : (ok ? '#4ade80' : '#ddd')
+      }
+
+      function setMode(m) {
+        mode = m
+        Array.from(document.querySelectorAll('.mode')).forEach((el) => {
+          el.classList.toggle('on', el.dataset.mode === m)
+        })
+      }
+
+      function load() {
+        let saved = {}
+        try { saved = JSON.parse(localStorage.getItem('gc_conn') || '{}') } catch (e) {}
+        $('ip').value = saved.ip || ''
+        $('port').value = saved.port || '12393'
+        $('token').value = saved.token || ''
+        setMode(saved.mode || 'auto')
+      }
+
+      function conn() {
+        return {
+          ip: $('ip').value.trim(),
+          port: $('port').value.trim() || '12393',
+          token: $('token').value.trim(),
+        }
+      }
+
+      /** 探测某个 base 是否可达（3 秒超时） */
+      async function probe(base) {
+        try {
+          const ctrl = new AbortController()
+          const t = setTimeout(() => ctrl.abort(), 3000)
+          const res = await fetch(base + '/', { signal: ctrl.signal, cache: 'no-store' })
+          clearTimeout(t)
+          return res.ok || res.status === 401
+        } catch (e) {
+          return false
+        }
+      }
+
+      /** 根据当前模式解析出要使用的 base URL；返回 null 表示不可达 */
+      async function resolveBase() {
+        const { ip, port } = conn()
+        const http = 'http://' + ip + ':' + port
+        const https = 'https://' + ip + ':' + HTTPS_PORT
+        if (mode === 'http') return http
+        if (mode === 'https') return (await probe(https)) ? https : null
+        // auto：优先加密（语音/屏幕共享需要安全上下文），失败回落明文
+        if (await probe(https)) return https
+        if (await probe(http)) return http
+        return null
+      }
+
+      async function testConn() {
+        const { ip, token } = conn()
+        if (!ip) return setStatus('请填写电脑 IP', false)
+        setStatus('正在探测 ' + ip + ' …', null)
+        const base = await resolveBase()
+        if (!base) return setStatus('❌ 连不上：加密/明文都不可达', false)
+        setStatus('正在连接 ' + base + ' …', null)
+        try {
+          const url = token ? base + '/?token=' + encodeURIComponent(token) : base + '/'
+          const res = await fetch(url, { redirect: 'follow', cache: 'no-store' })
+          if (res.ok) setStatus('✅ 连接成功（' + (base.startsWith('https') ? '加密' : '明文') + '）', true)
+          else if (res.status === 401) setStatus('❌ 口令错误', false)
+          else setStatus('❌ 返回 HTTP ' + res.status, false)
+        } catch (e) {
+          setStatus('❌ 无法连接：' + e.message, false)
+        }
+      }
+
+      async function saveAndGo() {
+        const { ip, port, token } = conn()
+        if (!ip) return setStatus('请填写电脑 IP', false)
+        localStorage.setItem('gc_conn', JSON.stringify({ ip, port, token, mode }))
+        setStatus('正在建立连接 …', null)
+        const base = await resolveBase()
+        if (!base) return setStatus('❌ 连不上：请检查后端是否已启动、IP 是否正确', false)
+        location.href = base + (token ? '/?token=' + encodeURIComponent(token) : '/')
+      }
+
+      document.querySelectorAll('.mode').forEach((el) => {
+        el.addEventListener('click', () => setMode(el.dataset.mode))
+      })
+      $('test').addEventListener('click', testConn)
+      $('save').addEventListener('click', saveAndGo)
+      load()
+    </script>
+  </body>
+</html>
