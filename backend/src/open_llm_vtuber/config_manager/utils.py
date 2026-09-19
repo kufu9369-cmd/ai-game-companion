@@ -136,19 +136,18 @@ def scan_config_alts_directory(config_alts_dir: str) -> list[dict]:
     - list[dict]: A list of dicts containing config info:
         - filename: The actual config file name
         - name: Display name from config, falls back to filename if not specified
+        - uid: conf_uid（用于前端高亮"当前人设"——比文件名/显示名可靠）
     """
     config_files = []
 
     # Add default config first
     default_config = read_yaml("conf.yaml")
+    default_character = default_config.get("character_config", {}) if default_config else {}
     config_files.append(
         {
             "filename": "conf.yaml",
-            "name": default_config.get("character_config", {}).get(
-                "conf_name", "conf.yaml"
-            )
-            if default_config
-            else "conf.yaml",
+            "name": default_character.get("conf_name", "conf.yaml"),
+            "uid": default_character.get("conf_uid", "conf.yaml"),
         }
     )
 
@@ -157,14 +156,12 @@ def scan_config_alts_directory(config_alts_dir: str) -> list[dict]:
         for file in files:
             if file.endswith(".yaml"):
                 config: dict = read_yaml(os.path.join(root, file))
+                character = config.get("character_config", {}) if config else {}
                 config_files.append(
                     {
                         "filename": file,
-                        "name": config.get("character_config", {}).get(
-                            "conf_name", file
-                        )
-                        if config
-                        else file,
+                        "name": character.get("conf_name", file),
+                        "uid": character.get("conf_uid", file),
                     }
                 )
     logger.debug(f"Found config files: {config_files}")

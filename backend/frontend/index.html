@@ -2,6 +2,8 @@
 <html>
   <head>
     <meta charset="UTF-8" />
+    <!-- 手机浏览器/WebView 里按设备宽度渲染（App 内 WebView 本就按屏宽，此行主要修手机浏览器） -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Open-LLM-Vtuber</title>
 
     <!-- ============================================================
@@ -377,37 +379,56 @@
         }, 600);
       })();
 
-      /* ---------- 6) 人设 & 形象 双库切换面板 ----------
-         人设（性格/声音）与形象（Live2D 外观）解耦，可独立选择：
-           · 人设走 switch-config（characters/ 目录的角色卡）
-           · 形象走 switch-model（model_dict.json 的模型库，只换皮不换人）
-         悬浮窗(pet)模式不放。 */
+      /* ---------- 6) 设置中心（人设 / 形象 / 声音 / 提醒）----------
+         两端共用同一份数据与操作逻辑，只有外壳不同：
+           · 电脑端：右上角紧凑挂件（与旧版观感一致，鼠标点选）
+           · 手机端：同位置加大入口 → 全屏设置中心（分栏 Tab，大按钮易点）
+         人设走 switch-config，形象走 switch-model（只换皮不换人），
+         声线走 switch-voice / save-voice，提醒走 reminder-*。
+         悬浮窗(pet)模式不加载。 */
       (function () {
         if (window.__gcPet) return;
-        if (window.__gcCharPicker) return;
-        window.__gcCharPicker = true;
+        if (window.__gcPanelV2) return;
+        window.__gcPanelV2 = true;
 
-        var wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;top:8px;right:8px;z-index:99999;font-size:12px;'
-          + 'background:rgba(15,18,30,.55);backdrop-filter:blur(4px);border-radius:10px;'
-          + 'padding:4px 6px;color:#fff;user-select:none;max-width:52vw;box-shadow:0 2px 10px rgba(0,0,0,.25);';
-        var row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:6px;align-items:center;justify-content:flex-end;';
-        var btn = document.createElement('div');
-        btn.textContent = '🎭 人设 / 👗 形象 / 🎙 声音';
-        btn.style.cssText = 'cursor:pointer;padding:2px 6px;font-weight:600;';
-        var rbtn = document.createElement('div');
-        rbtn.textContent = '⏰ 提醒';
-        rbtn.style.cssText = 'cursor:pointer;padding:2px 6px;font-weight:600;';
-        row.appendChild(btn); row.appendChild(rbtn);
-        var panel = document.createElement('div');
-        panel.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 2px;max-height:70vh;overflow-y:auto;';
-        var rpanel = document.createElement('div');
-        rpanel.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 2px;max-height:70vh;overflow-y:auto;';
-        wrap.appendChild(row); wrap.appendChild(panel); wrap.appendChild(rpanel);
-        document.documentElement.appendChild(wrap);
+        /* ================= 环境判定 ================= */
+        // 触摸设备且屏幕较短边小于 820px → 移动版布局
+        var IS_MOBILE = false;
+        try {
+          IS_MOBILE = ('ontouchstart' in window)
+            && Math.min(window.innerWidth, window.innerHeight) < 820;
+        } catch (e) {}
 
-        var opened = false;
+        /* URL 参数（便于调试与原生深链）：
+             ?gc_ui=mobile|desktop      强制布局（默认按触摸+屏宽自动判断）
+             ?gc_open=persona|model|voice|remind   打开设置中心并定位分栏
+           注意：pet 悬浮窗模式已在函数开头直接返回，不受影响。 */
+        var Q = {};
+        try {
+          String(location.search || '').replace(/^\?/, '').split('&').forEach(function (kv) {
+            if (!kv) return;
+            var eq = kv.indexOf('=');
+            Q[decodeURIComponent(eq < 0 ? kv : kv.slice(0, eq))] =
+              eq < 0 ? '' : decodeURIComponent(kv.slice(eq + 1));
+          });
+        } catch (e) {}
+        if (Q.gc_ui === 'mobile') IS_MOBILE = true;
+        else if (Q.gc_ui === 'desktop') IS_MOBILE = false;
+        var TAP = 44;                                  // 最小可点边长（CSS px）
+        var Z = 2147480000;                            // 盖住一切
+
+        /* ================= 数据层 ================= */
+        var S = {
+          configs: null, currentConfig: '',
+          models: null, currentModel: '',
+          voices: null, currentVoice: null,
+          reminders: null
+        };
+        var renderTimer = null;
+        function scheduleRender() {
+          if (renderTimer) return;
+          renderTimer = setTimeout(function () { renderTimer = null; renderAll(); }, 60);
+        }
 
         function ws() {
           try {
@@ -418,234 +439,533 @@
           return null;
         }
 
-        function sectionTitle(text) {
-          var t = document.createElement('div');
-          t.textContent = text;
-          t.style.cssText = 'opacity:.75;font-weight:600;padding:2px 4px 0;';
-          return t;
+        function send(obj) {
+          var s = ws();
+          if (!s) { toast('⚠️ 未连接后端'); return false; }
+          try { s.send(JSON.stringify(obj)); return true; } catch (e) { return false; }
         }
 
-        function addRow(parent, display, hint, onclick) {
-          var row = document.createElement('div');
-          row.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;'
-            + 'background:rgba(255,255,255,.08);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-          var main = document.createElement('span');
-          main.textContent = display;
-          row.appendChild(main);
-          if (hint) {
-            var h = document.createElement('span');
-            h.textContent = ' ' + hint;
-            h.style.cssText = 'opacity:.55;font-size:10px';
-            row.appendChild(h);
+        function fetchAll() {
+          send({ type: 'fetch-configs' });
+          send({ type: 'fetch-models' });
+          send({ type: 'fetch-voices' });
+          send({ type: 'reminder-list' });
+        }
+
+        /* ================= 轻提示 ================= */
+        var toastEl = null, toastTimer = null;
+        function toast(msg, kind) {
+          if (!toastEl) {
+            toastEl = document.createElement('div');
+            toastEl.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);'
+              + 'z-index:' + (Z + 10) + ';padding:10px 16px;border-radius:12px;'
+              + 'background:rgba(20,22,34,.94);color:#fff;font-size:14px;line-height:1.4;'
+              + 'max-width:80vw;text-align:center;pointer-events:none;opacity:0;'
+              + 'transition:opacity .18s;box-shadow:0 6px 24px rgba(0,0,0,.4);';
+            document.documentElement.appendChild(toastEl);
           }
-          row.onmouseenter = function () { row.style.background = 'rgba(255,255,255,.22)'; };
-          row.onmouseleave = function () { row.style.background = 'rgba(255,255,255,.08)'; };
-          row.onclick = onclick;
-          parent.appendChild(row);
+          toastEl.style.color = kind === 'err' ? '#ffb4b4' : (kind === 'ok' ? '#a7f3c6' : '#fff');
+          toastEl.textContent = msg;
+          toastEl.style.opacity = '1';
+          if (toastTimer) clearTimeout(toastTimer);
+          toastTimer = setTimeout(function () { toastEl.style.opacity = '0'; }, 1800);
         }
 
-        function addHint(parent, text) {
-          var d = document.createElement('div');
-          d.textContent = text;
-          d.style.cssText = 'opacity:.55;padding:2px 8px;';
-          parent.appendChild(d);
+        /* ================= 样式（两端共用） ================= */
+        var style = document.createElement('style');
+        style.textContent = [
+          '.gc-root,.gc-root *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}',
+          '.gc-root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;',
+          '  font-size:13px;color:#fff;line-height:1.45}',
+
+          /* ---- 通用控件 ---- */
+          '.gc-row{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;',
+          '  background:rgba(255,255,255,.07);cursor:pointer;transition:background .12s}',
+          '.gc-row:active{background:rgba(255,255,255,.22)}',
+          '.gc-row .gc-main{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+          '.gc-row .gc-sub{display:block;font-size:11px;opacity:.55;overflow:hidden;',
+          '  text-overflow:ellipsis;white-space:nowrap;margin-top:1px}',
+          '.gc-row.gc-on{background:rgba(96,165,250,.20);box-shadow:inset 0 0 0 1px rgba(96,165,250,.75)}',
+          '.gc-row.gc-on .gc-main{font-weight:600}',
+          '.gc-check{flex:0 0 auto;font-size:11px;padding:2px 7px;border-radius:20px;',
+          '  background:rgba(96,165,250,.9);color:#fff;white-space:nowrap}',
+          '.gc-sec{opacity:.7;font-weight:600;padding:10px 2px 2px;font-size:12px}',
+          '.gc-hint{opacity:.5;padding:4px 2px;font-size:12px}',
+          '.gc-list{display:flex;flex-direction:column;gap:6px}',
+          '.gc-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;',
+          '  min-height:40px;padding:0 14px;border-radius:10px;border:0;cursor:pointer;',
+          '  background:rgba(255,255,255,.13);color:#fff;font-size:13px;font-family:inherit}',
+          '.gc-btn:active{background:rgba(255,255,255,.3)}',
+          '.gc-btn.gc-primary{background:linear-gradient(180deg,rgba(96,165,250,.95),rgba(59,130,246,.95))}',
+          '.gc-btn.gc-green{background:linear-gradient(180deg,rgba(52,211,153,.9),rgba(16,185,129,.9))}',
+          '.gc-in{min-height:40px;padding:8px 10px;border-radius:10px;font-size:14px;font-family:inherit;',
+          '  border:1px solid rgba(255,255,255,.22);background:rgba(0,0,0,.3);color:#fff;width:100%}',
+          '.gc-in:focus{outline:0;border-color:rgba(96,165,250,.9)}',
+
+          /* ---- 电脑端：右上角紧凑挂件 ---- */
+          '.gc-widget{position:fixed;top:8px;right:8px;z-index:' + Z + ';font-size:12px;',
+          '  background:rgba(15,18,30,.62);backdrop-filter:blur(6px);border-radius:10px;',
+          '  padding:4px 6px;user-select:none;box-shadow:0 2px 10px rgba(0,0,0,.28)}',
+          '.gc-widget .gc-trigger{display:flex;gap:8px;align-items:center;justify-content:flex-end}',
+          '.gc-widget .gc-t{display:flex;align-items:center;gap:7px;cursor:pointer;padding:3px 8px;',
+          '  font-weight:600;border-radius:8px;white-space:nowrap}',
+          '.gc-widget .gc-t:hover{background:rgba(255,255,255,.16)}',
+          '.gc-widget .gc-dot{width:7px;height:7px;border-radius:50%;background:#9ca3af;flex:0 0 auto}',
+          '.gc-widget .gc-dot.ok{background:#34d399;box-shadow:0 0 6px rgba(52,211,153,.8)}',
+          '.gc-widget .gc-body{display:none;flex-direction:column;gap:5px;padding:6px 2px 2px;',
+          '  max-height:70vh;overflow-y:auto;width:290px;max-width:52vw}',
+
+          /* ---- 手机端：入口按钮 + 全屏设置中心 ---- */
+          '.gc-fab{position:fixed;top:calc(8px + env(safe-area-inset-top));right:8px;z-index:' + Z + ';',
+          '  display:flex;align-items:center;gap:6px;min-height:38px;padding:0 12px;border-radius:20px;',
+          '  background:rgba(15,18,30,.7);backdrop-filter:blur(6px);color:#fff;font-size:13px;',
+          '  font-weight:600;box-shadow:0 2px 12px rgba(0,0,0,.35)}',
+          '.gc-fab:active{background:rgba(40,46,70,.9)}',
+          '.gc-mask{position:fixed;inset:0;z-index:' + Z + ';background:rgba(0,0,0,.45);',
+          '  backdrop-filter:blur(2px)}',
+          '.gc-sheet{position:fixed;inset:0;z-index:' + (Z + 1) + ';display:flex;flex-direction:column;',
+          '  background:linear-gradient(170deg,#181b2a 0%,#1d1a2e 60%,#161726 100%);color:#fff}',
+          '.gc-sheet-head{display:flex;align-items:center;justify-content:space-between;gap:8px;',
+          '  padding:calc(10px + env(safe-area-inset-top)) 12px 10px;flex:0 0 auto}',
+          '.gc-sheet-title{font-size:17px;font-weight:700}',
+          '.gc-close{min-width:' + TAP + 'px;min-height:' + TAP + 'px;display:flex;align-items:center;',
+          '  justify-content:center;border-radius:50%;background:rgba(255,255,255,.12);font-size:18px;cursor:pointer}',
+          '.gc-close:active{background:rgba(255,255,255,.28)}',
+          '.gc-tabs{display:flex;gap:6px;padding:0 12px 10px;flex:0 0 auto;overflow-x:auto}',
+          '.gc-tab{flex:1 1 0;min-width:74px;min-height:' + TAP + 'px;display:flex;flex-direction:column;',
+          '  align-items:center;justify-content:center;gap:2px;padding:6px 4px;border-radius:12px;',
+          '  background:rgba(255,255,255,.07);font-size:12px;cursor:pointer;transition:background .12s}',
+          '.gc-tab .gc-tab-i{font-size:18px;line-height:1}',
+          '.gc-tab.gc-active{background:linear-gradient(180deg,rgba(96,165,250,.55),rgba(99,102,241,.45));',
+          '  box-shadow:inset 0 0 0 1px rgba(147,197,253,.7);font-weight:600}',
+          '.gc-body-wrap{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;',
+          '  padding:4px 12px calc(24px + env(safe-area-inset-bottom));display:flex;',
+          '  flex-direction:column;gap:6px}',
+          '.gc-card{background:rgba(255,255,255,.045);border-radius:14px;padding:12px;display:flex;',
+          '  flex-direction:column;gap:8px}',
+          '.gc-grid2{display:flex;gap:8px;flex-wrap:wrap}',
+          '.gc-grid2>*{flex:1 1 120px;min-width:0}',
+          '.gc-form{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:14px;',
+          '  background:rgba(96,165,250,.10);box-shadow:inset 0 0 0 1px rgba(96,165,250,.35)}',
+          '.gc-chip{min-height:36px;display:flex;align-items:center;justify-content:center;',
+          '  padding:0 10px;border-radius:9px;background:rgba(255,255,255,.08);',
+          '  font-size:12px;cursor:pointer;flex:1 1 0}',
+          '.gc-chip.gc-active{background:rgba(96,165,250,.55);font-weight:600}',
+          '.gc-rec{display:flex;align-items:center;gap:8px;padding:10px;border-radius:12px;',
+          '  background:rgba(255,255,255,.06);font-size:13px}',
+          '.gc-rec .gc-dot-live{width:9px;height:9px;border-radius:50%;background:#ef4444;',
+          '  animation:gcPulse 1s infinite}',
+          '@keyframes gcPulse{0%,100%{opacity:1}50%{opacity:.25}}'
+        ].join('');
+        document.documentElement.appendChild(style);
+
+        /* ================= 视图外壳 ================= */
+        var widget = null, sheet = null, fab = null;
+        var curTab = 'persona';     // persona | model | voice | remind
+        var bodyWrap = null, tabsEl = null;
+        var openDesktop = false;    // 电脑端挂件是否展开
+
+        function el(tag, css, text) {
+          var d = document.createElement(tag);
+          if (css) d.style.cssText = css;
+          if (text != null) d.textContent = text;
+          return d;
         }
 
-        function closePanel() { panel.style.display = 'none'; opened = false; }
-        function closeRPanel() { rpanel.style.display = 'none'; ropened = false; }
+        /* ---------- 电脑端挂件 ---------- */
+        function buildWidget() {
+          widget = el('div', '', '');
+          widget.className = 'gc-widget gc-root';
 
-        btn.onclick = function () {
-          opened = !opened;
-          panel.style.display = opened ? 'flex' : 'none';
-          if (opened) closeRPanel();
-          if (opened) {
-            var s = ws();
-            if (s) {
-              s.send(JSON.stringify({ type: 'fetch-configs' }));
-              s.send(JSON.stringify({ type: 'fetch-models' }));
-              s.send(JSON.stringify({ type: 'fetch-voices' }));
+          var trigger = el('div', '', '');
+          trigger.className = 'gc-trigger';
+          var dot = el('div', '', '');
+          dot.className = 'gc-dot';
+          var t1 = el('div', '', '🎭 人设 / 👗 形象 / 🎙 声音');
+          t1.className = 'gc-t';
+          var t2 = el('div', '', '⏰ 提醒');
+          t2.className = 'gc-t';
+          trigger.appendChild(dot); trigger.appendChild(t1); trigger.appendChild(t2);
+
+          var body = el('div', '', '');
+          body.className = 'gc-body';
+
+          t1.onclick = function () {
+            openDesktop = !openDesktop || curTab === 'remind';
+            curTab = 'persona';
+            refreshOpen();
+          };
+          t2.onclick = function () {
+            var wasOpen = openDesktop && curTab === 'remind';
+            curTab = 'remind';
+            openDesktop = !wasOpen;
+            refreshOpen();
+          };
+
+          widget.appendChild(trigger);
+          widget.appendChild(body);
+          widget.__body = body;
+          widget.__dot = dot;
+          document.documentElement.appendChild(widget);
+        }
+
+        function refreshOpen() {
+          if (IS_MOBILE) return;
+          widget.__body.style.display = openDesktop ? 'flex' : 'none';
+          if (openDesktop) fetchAll();
+          renderAll();
+          updateDot();
+        }
+
+        function updateDot() {
+          var d = widget && widget.__dot;
+          if (!d) return;
+          var ok = !!ws();
+          d.className = 'gc-dot' + (ok ? ' ok' : '');
+        }
+
+        /* ---------- 手机端：入口 + 全屏设置中心 ---------- */
+        function buildMobile() {
+          fab = el('div', '', '');
+          fab.className = 'gc-fab gc-root';
+          fab.appendChild(el('span', 'font-size:16px', '⚙️'));
+          fab.appendChild(el('span', '', '设置'));
+          fab.onclick = function () { openSheet(); };
+          document.documentElement.appendChild(fab);
+        }
+
+        function openSheet(tab) {
+          if (tab) curTab = tab;
+          if (!sheet) sheet = createSheet();
+          sheet.__mask.style.display = 'block';
+          sheet.style.display = 'flex';
+          fetchAll();
+          renderAll();
+        }
+
+        function closeSheet() {
+          if (!sheet) return;
+          sheet.style.display = 'none';
+          sheet.__mask.style.display = 'none';
+        }
+
+        function createSheet() {
+          var mask = el('div', '', '');
+          mask.className = 'gc-mask';
+          mask.onclick = closeSheet;
+
+          var sh = el('div', '', '');
+          sh.className = 'gc-sheet gc-root';
+
+          // 顶栏
+          var head = el('div', '', '');
+          head.className = 'gc-sheet-head';
+          head.appendChild(el('div', '', '⚙️ 设置中心'))
+            .className = 'gc-sheet-title';
+          var close = el('div', '', '✕');
+          close.className = 'gc-close';
+          close.onclick = closeSheet;
+          head.appendChild(close);
+
+          // Tab 栏
+          tabsEl = el('div', '', '');
+          tabsEl.className = 'gc-tabs';
+          [['persona', '🎭', '人设'], ['model', '👗', '形象'],
+           ['voice', '🎙', '声音'], ['remind', '⏰', '提醒']].forEach(function (t) {
+            var tab = el('div', '', '');
+            tab.className = 'gc-tab';
+            tab.dataset.k = t[0];
+            tab.appendChild(el('span', '', t[1])).className = 'gc-tab-i';
+            tab.appendChild(el('span', '', t[2]));
+            tab.onclick = function () {
+              curTab = t[0];
+              renderAll();
+              bodyWrap.scrollTop = 0;
+            };
+            tabsEl.appendChild(tab);
+          });
+
+          bodyWrap = el('div', '', '');
+          bodyWrap.className = 'gc-body-wrap';
+
+          sh.appendChild(head);
+          sh.appendChild(tabsEl);
+          sh.appendChild(bodyWrap);
+          document.documentElement.appendChild(mask);
+          document.documentElement.appendChild(sh);
+          sh.__mask = mask;
+          sh.__bodyWrap = bodyWrap;
+          return sh;
+        }
+
+        /* ================= 渲染 ================= */
+        function renderAll() {
+          if (IS_MOBILE) {
+            if (!sheet || sheet.style.display === 'none') { updateDot(); return; }
+            Array.prototype.forEach.call(tabsEl.children, function (t) {
+              if (t.dataset.k === curTab) t.classList.add('gc-active');
+              else t.classList.remove('gc-active');
+            });
+            bodyWrap.innerHTML = '';
+            renderTab(bodyWrap, curTab, true);
+          } else {
+            if (!widget) return;
+            updateDot();
+            if (!openDesktop) return;
+            var b = widget.__body;
+            b.innerHTML = '';
+            // 电脑端把三栏纵向铺开（保持旧观感），提醒单独一栏
+            if (curTab === 'remind') {
+              renderTab(b, 'remind', false);
+            } else {
+              renderTab(b, 'persona', false);
+              renderTab(b, 'model', false);
+              renderTab(b, 'voice', false);
             }
           }
-        };
-
-        var ropened = false;
-        rbtn.onclick = function () {
-          ropened = !ropened;
-          rpanel.style.display = ropened ? 'flex' : 'none';
-          if (ropened) {
-            closePanel();
-            renderRPanel();  // 立即渲染，不等网络
-            var s = ws();
-            if (s) s.send(JSON.stringify({ type: 'reminder-list' }));
-          }
-        };
-
-        /* ---------- 状态驱动：四个列表都存 state，任何更新都整体重绘一次 ---------- */
-        var state = { configs: null, models: null, voices: null, currentVoice: null, reminders: null };
-        var renderTimer = null;
-
-        function scheduleRender() {
-          if (renderTimer) clearTimeout(renderTimer);
-          renderTimer = setTimeout(renderPanel, 60);
         }
 
-        function renderPanel() {
-          renderTimer = null;
-          panel.innerHTML = '';
-
-          panel.appendChild(sectionTitle('人设（性格 · 声音）'));
-          if (state.configs && state.configs.length) {
-            state.configs.forEach(function (c) {
-              var file = (typeof c === 'string') ? c : (c.filename || c.file || '');
-              var name = (typeof c === 'string') ? c : (c.name || c.filename || c.file || file);
-              if (!file) return;
-              addRow(panel, '🎭 ' + name, '', function () {
-                var s = ws(); if (!s) return;
-                s.send(JSON.stringify({ type: 'switch-config', file: file }));
-                closePanel();
-                console.log('[GC-CHAR] 切换人设 -> ' + file);
-              });
-            });
-          } else {
-            addHint(panel, state.configs ? '（无）' : '加载中…');
-          }
-
-          panel.appendChild(sectionTitle('形象（外观模型）'));
-          if (state.models && state.models.length) {
-            state.models.forEach(function (m) {
-              if (!m.name) return;
-              addRow(panel, '👗 ' + m.name, m.description || '', function () {
-                var s = ws(); if (!s) return;
-                s.send(JSON.stringify({ type: 'switch-model', model: m.name }));
-                closePanel();
-                console.log('[GC-MODEL] 切换形象 -> ' + m.name);
-              });
-            });
-          } else {
-            addHint(panel, state.models ? '（无）' : '加载中…');
-          }
-
-          panel.appendChild(sectionTitle('声音（克隆音色 · 点击切换）'));
-          if (state.voices && state.voices.length) {
-            state.voices.forEach(function (v) {
-              var mark = (v.name === state.currentVoice) ? ' ✓' : '';
-              addRow(panel, '🔊 ' + v.name + mark, '', function () {
-                var s = ws(); if (!s) return;
-                s.send(JSON.stringify({ type: 'switch-voice', name: v.name }));
-                console.log('[GC-VOICE] 切换声线 -> ' + v.name);
-              });
-            });
-          } else {
-            addHint(panel, state.voices ? '（无）' : '加载中…');
-          }
-          panel.appendChild(addVoiceControls());
+        function renderTab(box, tab, mobile) {
+          if (tab === 'persona') return renderPersona(box, mobile);
+          if (tab === 'model') return renderModel(box, mobile);
+          if (tab === 'voice') return renderVoice(box, mobile);
+          if (tab === 'remind') return renderRemind(box, mobile);
         }
 
-        function renderRPanel() {
-          rpanel.innerHTML = '';
-          rpanel.appendChild(sectionTitle('⏰ 定时提醒（到点她会主动开口）'));
-          if (!ws()) {
-            addHint(rpanel, '⚠️ 未连接后端——连上后提醒才会响，列表也会加载');
-          }
-          if (state.reminders && state.reminders.length) {
-            state.reminders.forEach(function (r) {
-              addRow(rpanel, '⏰ ' + (r.desc || r.fire_at) + ' — ' + r.text, '点我取消', function () {
-                var s = ws(); if (!s) return;
-                s.send(JSON.stringify({ type: 'reminder-cancel', id: r.id }));
-              });
-            });
-          } else {
-            addHint(rpanel, state.reminders ? '（暂无提醒）' : '加载中…');
-          }
-          rpanel.appendChild(addReminderControls());
-          addHint(rpanel, '循环提醒到点自动排下一次，点列表条目取消。也可以直接跟她说"每天8点提醒我…"');
+        function sec(box, text) { box.appendChild(el('div', '', text)).className = 'gc-sec'; }
+        function hint(box, text) { box.appendChild(el('div', '', text)).className = 'gc-hint'; }
+        function listBox(box, mobile) {
+          var d = el('div', '', '');
+          if (mobile) d.className = 'gc-card';
+          d.classList.add('gc-list');
+          box.appendChild(d);
+          return d;
         }
 
-        function addReminderControls() {
-          var box = document.createElement('div');
-          box.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:4px 2px;';
-          var bar1 = document.createElement('div');
-          bar1.style.cssText = 'display:flex;gap:4px;';
-          var txt = document.createElement('input');
-          txt.placeholder = '提醒内容（如：查快递）';
-          txt.style.cssText = 'flex:1 1 100px;min-width:100px;padding:3px 6px;border-radius:6px;'
-            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
-          var tm = document.createElement('input');
-          tm.type = 'time';
-          tm.style.cssText = 'width:92px;padding:3px 4px;border-radius:6px;'
-            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
-          var min = document.createElement('input');
-          min.placeholder = '分钟';
-          min.type = 'number';
-          min.min = '0.5';
-          min.step = '0.5';
-          min.style.cssText = 'width:60px;padding:3px 6px;border-radius:6px;'
-            + 'border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:12px;';
-          bar1.appendChild(txt); bar1.appendChild(tm); bar1.appendChild(min);
-          var bar2 = document.createElement('div');
-          bar2.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap;';
-          var mode = 'none';
-          var modeNames = { none: '单次', daily: '每天', weekly: '每周' };
-          var dayBar = document.createElement('div');
-          dayBar.style.cssText = 'display:none;gap:3px;flex-wrap:wrap;';
-          var picked = {};
-          [1,2,3,4,5,6,7].forEach(function (d) {
-            var c = document.createElement('div');
-            c.textContent = '周' + '一二三四五六日'[d - 1];
-            c.style.cssText = 'cursor:pointer;padding:2px 6px;border-radius:6px;background:rgba(255,255,255,.08);';
-            c.onclick = function () {
-              picked[d] = !picked[d];
-              c.style.background = picked[d] ? 'rgba(80,140,255,.45)' : 'rgba(255,255,255,.08)';
-            };
-            picked[d] = false;
-            dayBar.appendChild(c);
-          });
-          Object.keys(modeNames).forEach(function (m) {
-            var c = document.createElement('div');
-            c.textContent = modeNames[m];
-            c.dataset.m = m;
-            c.style.cssText = 'cursor:pointer;padding:3px 8px;border-radius:6px;background:rgba(255,255,255,.08);';
-            c.onclick = function () {
-              mode = m;
-              Array.prototype.forEach.call(bar2.children, function (x) {
-                if (x.dataset && x.dataset.m) {
-                  x.style.background = (x.dataset.m === m) ? 'rgba(80,140,255,.45)' : 'rgba(255,255,255,.08)';
+        function row(parent, opts) {
+          var r = el('div', '', '');
+          r.className = 'gc-row' + (opts.on ? ' gc-on' : '');
+          var main = el('div', '', '');
+          main.className = 'gc-main';
+          main.appendChild(el('div', '', opts.title));
+          if (opts.sub) main.appendChild(el('span', '', opts.sub)).className = 'gc-sub';
+          r.appendChild(main);
+          if (opts.on) {
+            var c = el('div', '', '✓ 使用中');
+            c.className = 'gc-check';
+            r.appendChild(c);
+          }
+          if (opts.onClick) r.onclick = opts.onClick;
+          parent.appendChild(r);
+          return r;
+        }
+
+        /* ---------- 人设 ---------- */
+        function renderPersona(box, mobile) {
+          sec(box, '🎭 人设（性格 · 声线 · 设定）');
+          if (!S.configs) { hint(box, ws() ? '加载中…' : '⚠️ 未连接后端'); return; }
+          if (!S.configs.length) { hint(box, '（没有可用人设）'); return; }
+          var l = listBox(box, mobile);
+          S.configs.forEach(function (c) {
+            var file = (typeof c === 'string') ? c : (c.filename || c.file || '');
+            var name = (typeof c === 'string') ? c : (c.name || file);
+            if (!file) return;
+            // 后端按 conf_uid 比对出的 current 是唯一权威（conf.yaml 与
+            // zh_星野露露.yaml 这类同 uid 配置只标第一份），这里不做本地推断
+            var isOn = (typeof c === 'object') && c.current === true;
+            row(l, {
+              title: '🎭 ' + name,
+              sub: file,
+              on: isOn,
+              onClick: function () {
+                if (isOn) { toast('已经是这个人设了'); return; }
+                if (send({ type: 'switch-config', file: file })) {
+                  renderAll();
+                  toast('正在切换到「' + name + '」…（首次切换约需半分钟）');
                 }
-              });
-              dayBar.style.display = (m === 'weekly') ? 'flex' : 'none';
-            };
-            bar2.appendChild(c);
+              }
+            });
           });
-          bar2.appendChild(dayBar);
-          var add = document.createElement('div');
-          add.textContent = '＋ 添加提醒';
-          add.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(80,140,255,.35);align-self:flex-start;';
-          add.onclick = function () {
-            var t = (txt.value || '').trim();
-            var s = ws(); if (!s) return;
-            if (!t) { add.textContent = '先填提醒内容'; setTimeout(function(){ add.textContent = '＋ 添加提醒'; }, 1500); return; }
-            var weekdays = Object.keys(picked).filter(function (d) { return picked[d]; }).join(',');
-            if (mode === 'weekly' && !weekdays) { add.textContent = '选星期几'; setTimeout(function(){ add.textContent = '＋ 添加提醒'; }, 1500); return; }
-            s.send(JSON.stringify({
-              type: 'reminder-add', text: t,
-              at_time: (mode !== 'none' || tm.value) ? (tm.value || '') : '',
-              delay_minutes: (!tm.value && mode === 'none') ? (parseFloat(min.value) || 0) : 0,
-              repeat: mode, weekdays: weekdays
-            }));
-            txt.value = '';
-          };
-          box.appendChild(bar1); box.appendChild(bar2); box.appendChild(add);
-          return box;
+          hint(box, '切换人设会重载角色设定与对话上下文。');
         }
 
-        /* ---------- 声音克隆：录音 / 导入 → 转 24k 单声道 wav → save-voice ---------- */
-        function encodeWav(samples, sampleRate) {
+        /* ---------- 形象 ---------- */
+        function renderModel(box, mobile) {
+          sec(box, '👗 形象（Live2D 外观，只换皮不换人）');
+          if (!S.models) { hint(box, ws() ? '加载中…' : '⚠️ 未连接后端'); return; }
+          if (!S.models.length) { hint(box, '（没有可用形象）'); return; }
+          var l = listBox(box, mobile);
+          S.models.forEach(function (m) {
+            if (!m.name) return;
+            var isOn = (m.current === true) || (m.name === S.currentModel);
+            row(l, {
+              title: '👗 ' + m.name,
+              sub: m.description || '',
+              on: isOn,
+              onClick: function () {
+                if (isOn) { toast('已经是这个形象了'); return; }
+                if (send({ type: 'switch-model', model: m.name })) {
+                  S.currentModel = m.name;
+                  renderAll();
+                  toast('正在切换到「' + m.name + '」…');
+                }
+              }
+            });
+          });
+        }
+
+        /* ---------- 声音 ---------- */
+        function renderVoice(box, mobile) {
+          sec(box, '🎙 声音（克隆音色，点击切换）');
+          if (!S.voices) { hint(box, ws() ? '加载中…' : '⚠️ 未连接后端'); return; }
+          var l = listBox(box, mobile);
+          if (!S.voices.length) hint(l, '（还没有声线，下面录一段试试）');
+          S.voices.forEach(function (v) {
+            var nm = (typeof v === 'string') ? v : (v.name || '');
+            if (!nm) return;
+            var isOn = (nm === S.currentVoice);
+            row(l, {
+              title: '🔊 ' + nm,
+              sub: '',
+              on: isOn,
+              onClick: function () {
+                if (isOn) { toast('已经在这个声线了'); return; }
+                send({ type: 'switch-voice', name: nm });
+                S.currentVoice = nm;
+                renderAll();
+                toast('声线已切到「' + nm + '」');
+              }
+            });
+          });
+          box.appendChild(voiceAddForm(mobile));
+        }
+
+        var recBtnRef = null, recState = { rec: null, chunks: [], sec: 0, timer: null };
+        function voiceAddForm(mobile) {
+          var form = el('div', '', '');
+          form.className = 'gc-form';
+
+          form.appendChild(el('div', 'font-weight:600;font-size:12px', '➕ 新增声线（克隆）'));
+
+          var rec = el('div', '', '');
+          rec.className = 'gc-rec';
+          var live = el('span', '', '');
+          live.className = 'gc-dot-live';
+          live.style.display = 'none';
+          var recTxt = el('span', 'flex:1 1 auto', '录一段 3~10 秒的清晰人声');
+          rec.appendChild(live); rec.appendChild(recTxt);
+          var recBtn = el('div', '', '开始录音');
+          recBtn.className = 'gc-btn gc-green';
+          rec.appendChild(recBtn);
+          recBtnRef = recBtn;
+
+          var fileIn = el('input', 'display:none', '');
+          fileIn.type = 'file';
+          fileIn.accept = 'audio/*';
+          var impBtn = el('div', '', '📁 导入音频文件');
+          impBtn.className = 'gc-btn';
+
+          var nameIn = el('input', '', '');
+          nameIn.className = 'gc-in';
+          nameIn.placeholder = '声线名字（例：露露 / 御姐音）';
+          var textIn = el('input', '', '');
+          textIn.className = 'gc-in';
+          textIn.placeholder = '参考音频里说的原话（一字不差，克隆关键）';
+          var saveBtn = el('div', '', '保存到声线库');
+          saveBtn.className = 'gc-btn gc-primary';
+          saveBtn.disabled = true;
+          saveBtn.style.opacity = '.5';
+
+          var pending = null;   // 待保存的 wav ArrayBuffer
+          function enableSave(ok) {
+            saveBtn.disabled = !ok;
+            saveBtn.style.opacity = ok ? '1' : '.5';
+          }
+
+          recBtn.onclick = function () {
+            if (recState.rec) { recState.rec.stop(); return; }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+              toast('当前环境不支持录音', 'err'); return;
+            }
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+              var mr = new MediaRecorder(stream);
+              recState.rec = mr; recState.chunks = []; recState.sec = 0;
+              mr.ondataavailable = function (e) { if (e.data && e.data.size) recState.chunks.push(e.data); };
+              mr.onstop = function () {
+                stream.getTracks().forEach(function (t) { t.stop(); });
+                clearInterval(recState.timer);
+                recState.rec = null;
+                live.style.display = 'none';
+                recBtn.textContent = '重新录音';
+                recTxt.textContent = '处理中…';
+                blobToWav(new Blob(recState.chunks))
+                  .then(function (buf) {
+                    pending = buf;
+                    enableSave(true);
+                    recTxt.textContent = '已就绪（' + recState.sec + ' 秒）→ 填下面两项再保存';
+                  })
+                  .catch(function (e) {
+                    recTxt.textContent = '录音处理失败：' + e.message;
+                  });
+              };
+              mr.start();
+              live.style.display = '';
+              recBtn.textContent = '停止';
+              recTxt.textContent = '录音中… 建议 3~10 秒';
+              recState.timer = setInterval(function () {
+                recState.sec += 1;
+                recTxt.textContent = '录音中… ' + recState.sec + ' 秒（建议 3~10 秒）';
+                if (recState.sec >= 15) mr.stop();
+              }, 1000);
+            }).catch(function (e) { toast('麦克风打开失败：' + e.message, 'err'); });
+          };
+
+          impBtn.onclick = function () { fileIn.click(); };
+          fileIn.onchange = function () {
+            if (!fileIn.files || !fileIn.files[0]) return;
+            var f = fileIn.files[0];
+            recTxt.textContent = '正在读取「' + f.name + '」…';
+            blobToWav(f).then(function (buf) {
+              pending = buf;
+              enableSave(true);
+              recTxt.textContent = '已导入：' + f.name + ' → 填下面两项再保存';
+            }).catch(function (e) { recTxt.textContent = '导入失败：' + e.message; });
+            fileIn.value = '';
+          };
+
+          saveBtn.onclick = function () {
+            var nm = (nameIn.value || '').trim();
+            var tx = (textIn.value || '').trim();
+            if (!pending) { toast('先录一段或导入音频', 'err'); return; }
+            if (!nm) { toast('给声线起个名字', 'err'); return; }
+            if (!tx) { toast('请填写参考音频里说的原话', 'err'); return; }
+            if (!send({ type: 'save-voice', name: nm, text: tx, audio: wavToB64(pending) })) return;
+            toast('正在上传声线，请稍候…');
+            pending = null;
+            enableSave(false);
+            nameIn.value = ''; textIn.value = '';
+            recTxt.textContent = '已提交，稍后点列表里的名字即可切换';
+            setTimeout(fetchAll, 2500);
+          };
+
+          form.appendChild(rec);
+          form.appendChild(impBtn);
+          form.appendChild(fileIn);
+          form.appendChild(nameIn);
+          form.appendChild(textIn);
+          form.appendChild(saveBtn);
+          if (!mobile) form.style.padding = '8px';
+          return form;
+        }
+
+        /* --- 音频 → 24k 单声道 WAV（后端 zipvoice 要求） --- */
+        function encodeWav(samples, rate) {
           var buf = new ArrayBuffer(44 + samples.length * 2);
           var v = new DataView(buf);
           function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
           str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
           str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-          v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+          v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
           v.setUint16(32, 2, true); v.setUint16(34, 16, true);
           str(36, 'data'); v.setUint32(40, samples.length * 2, true);
           for (var i = 0; i < samples.length; i++) {
@@ -655,9 +975,10 @@
           return buf;
         }
 
-        function blobToVoiceWav(blob) {
+        function blobToWav(blob) {
           return blob.arrayBuffer().then(function (ab) {
-            var ac = new (window.AudioContext || window.webkitAudioContext)();
+            var AC = window.AudioContext || window.webkitAudioContext;
+            var ac = new AC();
             return ac.decodeAudioData(ab).then(function (src) {
               var dur = src.duration;
               if (dur < 2) { ac.close(); throw new Error('音频太短（至少 2 秒，建议 3~10 秒）'); }
@@ -673,99 +994,182 @@
           });
         }
 
-        function askSaveVoice(wavBuf) {
-          var name = prompt('声线名字（例如：露露 / 御姐音 / 我的录音）：');
-          if (!name) return;
-          var text = prompt('参考音频里说的内容（一字不差地写下来，克隆质量关键）：');
-          if (!text) return;
-          var s = ws(); if (!s) return;
-          var bytes = new Uint8Array(wavBuf), bin = '';
+        function wavToB64(buf) {
+          var bytes = new Uint8Array(buf), bin = '';
           for (var i = 0; i < bytes.length; i += 8192)
             bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-          s.send(JSON.stringify({
-            type: 'save-voice', name: name, text: text,
-            audio: btoa(bin)
-          }));
-          console.log('[GC-VOICE] 上传声线 -> ' + name);
+          return btoa(bin);
         }
 
-        function startRecord() {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('当前页面不支持麦克风'); return;
-          }
-          navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-            var rec = new MediaRecorder(stream);
-            var chunks = [];
-            rec.ondataavailable = function (e) { chunks.push(e.data); };
-            rec.onstop = function () {
-              stream.getTracks().forEach(function (t) { t.stop(); });
-              recBtn.textContent = '🎙 按住说话… 点击开始录音';
-              blobToVoiceWav(new Blob(chunks)).then(askSaveVoice)
-                .catch(function (e) { alert('录音处理失败: ' + e.message); });
+        /* ---------- 提醒 ---------- */
+        var remindDraft = { mode: 'none', days: {} };
+        function renderRemind(box, mobile) {
+          sec(box, '⏰ 定时提醒（到点她会主动开口）');
+          if (!ws()) hint(box, '⚠️ 未连接后端——连上后提醒才会响');
+          if (!S.reminders) { hint(box, '加载中…'); return; }
+          var l = listBox(box, mobile);
+          if (!S.reminders.length) hint(l, '（暂无提醒）');
+          S.reminders.forEach(function (r) {
+            var rowEl = row(l, {
+              title: '⏰ ' + (r.desc || r.fire_at || ''),
+              sub: r.text || '',
+              on: false,
+              onClick: function () {
+                if (!send({ type: 'reminder-cancel', id: r.id })) return;
+                toast('已取消该提醒');
+                S.reminders = S.reminders.filter(function (x) { return x.id !== r.id; });
+                renderAll();
+              }
+            });
+            var del = el('div', '', '删除');
+            del.className = 'gc-check';
+            del.style.background = 'rgba(239,68,68,.85)';
+            rowEl.appendChild(del);
+          });
+          box.appendChild(remindForm(mobile));
+        }
+
+        function remindForm(mobile) {
+          var form = el('div', '', '');
+          form.className = 'gc-form';
+          form.appendChild(el('div', 'font-weight:600;font-size:12px', '➕ 新建提醒'));
+
+          var txt = el('input', '', '');
+          txt.className = 'gc-in';
+          txt.placeholder = '提醒内容（例：该值日了 / 查快递）';
+
+          var line = el('div', '', '');
+          line.className = 'gc-grid2';
+          var tm = el('input', '', '');
+          tm.className = 'gc-in';
+          tm.type = 'time';
+          var min = el('input', '', '');
+          min.className = 'gc-in';
+          min.type = 'number';
+          min.min = '0.5'; min.step = '0.5';
+          min.placeholder = '或 N 分钟后';
+          line.appendChild(tm); line.appendChild(min);
+
+          var modes = el('div', '', '');
+          modes.className = 'gc-grid2';
+          var modeNames = [['none', '单次'], ['daily', '每天'], ['weekly', '每周']];
+          modeNames.forEach(function (m) {
+            var c = el('div', '', m[1]);
+            c.className = 'gc-chip' + (remindDraft.mode === m[0] ? ' gc-active' : '');
+            c.dataset.m = m[0];
+            c.onclick = function () {
+              remindDraft.mode = m[0];
+              Array.prototype.forEach.call(modes.children, function (x) {
+                x.classList.toggle('gc-active', x.dataset.m === remindDraft.mode);
+              });
+              days.style.display = (remindDraft.mode === 'weekly') ? 'grid' : 'none';
             };
-            rec.start();
-            recBtn.textContent = '⏺ 录音中… 点击结束';
-            recBtn.onclick = function () { rec.stop(); recBtn.onclick = startRecord; };
-          }).catch(function (e) { alert('麦克风打开失败: ' + e.message); });
-        }
+            modes.appendChild(c);
+          });
 
-        var recBtn = null;
-        function addVoiceControls() {
-          var bar = document.createElement('div');
-          bar.style.cssText = 'display:flex;gap:4px;padding:4px 2px;flex-wrap:wrap;';
-          recBtn = document.createElement('div');
-          recBtn.textContent = '🎙 按住说话… 点击开始录音';
-          recBtn.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(80,200,120,.35);';
-          recBtn.onclick = startRecord;
-          var imp = document.createElement('div');
-          imp.textContent = '📁 导入音频';
-          imp.style.cssText = 'cursor:pointer;padding:4px 8px;border-radius:6px;background:rgba(255,255,255,.12);';
-          var file = document.createElement('input');
-          file.type = 'file'; file.accept = 'audio/*'; file.style.display = 'none';
-          file.onchange = function () {
-            if (!file.files || !file.files[0]) return;
-            blobToVoiceWav(file.files[0]).then(askSaveVoice)
-              .catch(function (e) { alert('导入失败: ' + e.message); });
-            file.value = '';
+          var days = el('div', '', '');
+          days.className = 'gc-grid2';
+          days.style.display = (remindDraft.mode === 'weekly') ? 'grid' : 'none';
+          [1, 2, 3, 4, 5, 6, 7].forEach(function (d) {
+            var c = el('div', '', '周' + '一二三四五六日'[d - 1]);
+            c.className = 'gc-chip' + (remindDraft.days[d] ? ' gc-active' : '');
+            c.onclick = function () {
+              remindDraft.days[d] = !remindDraft.days[d];
+              c.classList.toggle('gc-active', !!remindDraft.days[d]);
+            };
+            days.appendChild(c);
+          });
+
+          var add = el('div', '', '＋ 添加提醒');
+          add.className = 'gc-btn gc-primary';
+          add.onclick = function () {
+            var t = (txt.value || '').trim();
+            if (!t) { toast('先填提醒内容', 'err'); return; }
+            var wk = Object.keys(remindDraft.days)
+              .filter(function (d) { return remindDraft.days[d]; }).join(',');
+            if (remindDraft.mode === 'weekly' && !wk) { toast('选一下星期几', 'err'); return; }
+            var atTime = tm.value || '';
+            if (remindDraft.mode === 'none' && !atTime && !(parseFloat(min.value) > 0)) {
+              toast('填时间，或写几分钟后', 'err'); return;
+            }
+            if (!send({
+              type: 'reminder-add', text: t,
+              at_time: atTime,
+              delay_minutes: (!atTime && remindDraft.mode === 'none') ? (parseFloat(min.value) || 0) : 0,
+              repeat: remindDraft.mode,
+              weekdays: wk
+            })) return;
+            txt.value = ''; min.value = '';
+            toast('已添加提醒');
+            setTimeout(fetchAll, 1200);
           };
-          imp.onclick = function () { file.click(); };
-          bar.appendChild(recBtn); bar.appendChild(imp); bar.appendChild(file);
-          return bar;
+
+          form.appendChild(txt);
+          form.appendChild(line);
+          form.appendChild(modes);
+          form.appendChild(days);
+          form.appendChild(add);
+          hint(form, '循环提醒到点会自动排下一次；点列表条目可取消。也可以直接跟她说「每天8点提醒我…」');
+          return form;
         }
 
-        // 给每个新建的 WS 挂一个轻量监听：只更新 state，重绘交给 scheduleRender 统一做
+        /* ================= 消息监听（数据回来 → 重绘） ================= */
         var lastSock = null;
         setInterval(function () {
+          updateDot();
           var s = ws();
           if (!s || s === lastSock) return;
           lastSock = s;
-          s.addEventListener('message', function (ev) {
-            try {
-              if (typeof ev.data !== 'string' || ev.data.length > 8000) return;
-              if (ev.data.indexOf('"config-files"') < 0 && ev.data.indexOf('"model-list"') < 0
-                  && ev.data.indexOf('"voice-list"') < 0 && ev.data.indexOf('"voice-saved"') < 0
-                  && ev.data.indexOf('"voice-switched"') < 0 && ev.data.indexOf('"reminder-list"') < 0) return;
-              var o = JSON.parse(ev.data);
-              if (o.type === 'config-files' && o.configs) {
-                state.configs = o.configs;
-                scheduleRender();
-              } else if (o.type === 'model-list' && o.models) {
-                state.models = o.models;
-                scheduleRender();
-              } else if (o.type === 'voice-list' && o.voices) {
-                state.voices = o.voices;
-                state.currentVoice = o.current;
-                scheduleRender();
-              } else if (o.type === 'reminder-list') {
-                state.reminders = o.reminders || [];
-                scheduleRender();
-              } else if (o.type === 'voice-saved' || o.type === 'voice-switched') {
-                console.log('[GC-VOICE] ' + o.message);
-              }
-            } catch (e) {}
-          });
+          try {
+            s.addEventListener('message', function (ev) {
+              try {
+                if (typeof ev.data !== 'string' || ev.data.length > 200000) return;
+                if (ev.data.indexOf('config-files') < 0 && ev.data.indexOf('model-list') < 0
+                    && ev.data.indexOf('voice-list') < 0 && ev.data.indexOf('reminder-list') < 0
+                    && ev.data.indexOf('voice-saved') < 0 && ev.data.indexOf('config-switched') < 0) return;
+                var o = JSON.parse(ev.data);
+                if (o.type === 'config-files') {
+                  S.configs = o.configs || [];
+                  S.currentConfig = o.current || S.currentConfig;
+                  scheduleRender();
+                } else if (o.type === 'model-list') {
+                  S.models = o.models || [];
+                  S.currentModel = o.current || S.currentModel;
+                  scheduleRender();
+                } else if (o.type === 'voice-list') {
+                  S.voices = o.voices || [];
+                  S.currentVoice = o.current || null;
+                  scheduleRender();
+                } else if (o.type === 'reminder-list') {
+                  S.reminders = o.reminders || [];
+                  scheduleRender();
+                } else if (o.type === 'voice-saved') {
+                  toast(o.message || '声线已保存', 'ok');
+                  setTimeout(fetchAll, 800);
+                } else if (o.type === 'config-switched') {
+                  toast(o.message || '已切换', 'ok');
+                  setTimeout(fetchAll, 500);
+                }
+              } catch (e) {}
+            });
+          } catch (e) {}
         }, 1000);
+
+        /* ================= 对外入口（原生 App 可调用） ================= */
+        window.gcOpenSettings = function (tab) {
+          if (IS_MOBILE) openSheet(tab || 'persona');
+          else { curTab = tab || 'persona'; openDesktop = true; refreshOpen(); }
+        };
+        window.gcCloseSettings = function () {
+          if (IS_MOBILE) closeSheet(); else { openDesktop = false; refreshOpen(); }
+        };
+
+        /* ================= 初始化 ================= */
+        if (IS_MOBILE) buildMobile(); else buildWidget();
+        if (Q.gc_open) window.gcOpenSettings(Q.gc_open);
+        updateDot();
       })();
+
     </script>
 
     <script type="module" crossorigin src="./assets/main-nu7uwxNJ.js"></script>

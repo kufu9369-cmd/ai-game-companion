@@ -47,6 +47,7 @@ public class MainActivity extends BridgeActivity {
     private static final int RC_RECORD_AUDIO = 1001;
     /** 网页 WebView 引用，用于 JS 注入发送图片 */
     private WebView mainWebView;
+    private int panelRetries = 0;   // 设置中心打开重试计数
 
     /**
      * 诊断注入：把网页 console / 全局错误 / 实际生效的 WS 地址转发到原生 logcat（tag=GCWeb）。
@@ -372,6 +373,9 @@ public class MainActivity extends BridgeActivity {
 
         // 保证露露的 TTS 从外放扬声器出声
         startAudioRouteGuard();
+
+        // 从原生设置页跳转过来：直接打开网页端「设置中心」（人设/形象/声音/提醒）
+        handlePanelIntent(getIntent());
     }
 
     /**
@@ -476,6 +480,45 @@ public class MainActivity extends BridgeActivity {
         if (intent != null && "screen_share_toggle".equals(intent.getStringExtra("gc_action"))) {
             toggleScreenShare();
         }
+        // 原生设置页跳转到网页端「设置中心」
+        if (intent != null) handlePanelIntent(intent);
+    }
+
+    /** 处理「打开网页设置中心」的跳转指令（来自原生设置页/悬浮控制条）。 */
+    private void handlePanelIntent(Intent intent) {
+        if (intent == null || !"open_panel".equals(intent.getStringExtra("gc_action"))) return;
+        String tab = intent.getStringExtra("gc_tab");
+        openWebSettings(tab == null || tab.length() == 0 ? "persona" : tab);
+        // 消费掉，避免之后 onResume 反复触发
+        try {
+            intent.removeExtra("gc_action");
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
+     * 打开网页端「设置中心」（人设 / 形象 / 声音 / 提醒，与电脑端完全同一套）。
+     * 页面从电脑端加载需要几秒，所以轮询等 window.gcOpenSettings 出现再调。
+     */
+    private void openWebSettings(String tab) {
+        final String safe = tab == null ? "persona" : tab.replaceAll("[^a-z]", "");
+        if (mainWebView == null) return;
+        panelRetries = 12;   // 最多等约 10 秒
+        tryOpenPanel(safe);
+    }
+
+    private void tryOpenPanel(final String safe) {
+        if (mainWebView == null || panelRetries <= 0) return;
+        panelRetries--;
+        mainWebView.evaluateJavascript(
+                "(function(){if(window.gcOpenSettings){window.gcOpenSettings('" + safe
+                        + "');return '1';}return '0';})()",
+                v -> {
+                    if (v != null && v.contains("1")) return;
+                    if (panelRetries > 0 && mainWebView != null) {
+                        mainWebView.postDelayed(() -> tryOpenPanel(safe), 900);
+                    }
+                });
     }
 
     /** 开启/关闭屏幕共享（Android 14 前台服务 MediaProjection）。 */

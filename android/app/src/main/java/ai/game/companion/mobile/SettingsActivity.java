@@ -77,6 +77,40 @@ public class SettingsActivity extends AppCompatActivity {
         saveBtn.setOnClickListener(v -> saveConnection());
         root.addView(saveBtn, matchWrap());
 
+        // ---- 人设 / 形象 / 声音 / 提醒（与电脑端同一套设置中心） ----
+        root.addView(sectionTitle("🎭 人设 / 形象 / 声音 / 提醒"));
+        LinearLayout panelCard = new LinearLayout(this);
+        panelCard.setOrientation(LinearLayout.VERTICAL);
+        panelCard.setBackgroundColor(Color.parseColor("#232342"));
+        panelCard.setPadding(dp(16), dp(12), dp(16), dp(12));
+        LinearLayout.LayoutParams pcLp = matchWrap();
+        pcLp.topMargin = dp(8);
+        panelCard.setLayoutParams(pcLp);
+
+        TextView panelDesc = new TextView(this);
+        panelDesc.setText("切换性格（露露/苏苏/雪乃…）、Live2D 形象、克隆声线，\n管理定时提醒——与电脑端完全一致。");
+        panelDesc.setTextColor(Color.parseColor("#c9c3dd"));
+        panelDesc.setTextSize(13f);
+        panelCard.addView(panelDesc, matchWrap());
+
+        Button panelBtn = new Button(this);
+        panelBtn.setText("打开设置中心");
+        panelBtn.setBackgroundColor(Color.parseColor("#7C5CF6"));
+        panelBtn.setTextColor(Color.WHITE);
+        panelBtn.setOnClickListener(v -> {
+            Intent i = new Intent(this, MainActivity.class);
+            i.putExtra("gc_action", "open_panel");
+            i.putExtra("gc_tab", "persona");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(i);
+            finish();   // 回到主界面（设置中心在网页里）
+        });
+        LinearLayout.LayoutParams pbLp = matchWrap();
+        pbLp.topMargin = dp(10);
+        panelBtn.setLayoutParams(pbLp);
+        panelCard.addView(panelBtn);
+        root.addView(panelCard);
+
         // ---- 功能开关卡片 ----
         root.addView(sectionTitle("🎛️ 功能"));
 

@@ -695,11 +695,32 @@ class WebSocketHandler:
     async def _handle_fetch_configs(
         self, websocket: WebSocket, client_uid: str, data: WSMessage
     ) -> None:
-        """Handle fetching available configurations"""
+        """Handle fetching available configurations
+
+        每条配置附带 current 字段：按 conf_uid 与当前生效人设比对（无状态、
+        不受缓存影响），前端据此高亮"当前人设"。
+        """
         context = self.client_contexts[client_uid]
         config_files = scan_config_alts_directory(context.system_config.config_alts_dir)
+        active_uid = getattr(context.character_config, "conf_uid", "") or ""
+        current = ""
+        for c in config_files:
+            if not isinstance(c, dict):
+                continue
+            is_on = bool(active_uid) and c.get("uid") == active_uid
+            # 同一 uid 可能对应多份配置（如 conf.yaml 与某角色卡内容相同），只标第一份
+            c["current"] = bool(is_on) and not current
+            if is_on and not current:
+                current = c.get("filename") or ""
         await websocket.send_text(
-            json.dumps({"type": "config-files", "configs": config_files})
+            json.dumps(
+                {
+                    "type": "config-files",
+                    "configs": config_files,
+                    "current": current,
+                },
+                ensure_ascii=False,
+            )
         )
 
     async def _handle_config_switch(
@@ -710,27 +731,43 @@ class WebSocketHandler:
         if config_file_name:
             context = self.client_contexts[client_uid]
             await context.handle_config_switch(websocket, config_file_name)
+            # 切换成功后重新下发列表 → 面板"当前人设"高亮立即跟随
+            try:
+                await self._handle_fetch_configs(websocket, client_uid, {})
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"重新下发人设列表失败（已忽略）: {e}")
 
     async def _handle_fetch_models(
         self, websocket: WebSocket, client_uid: str, data: dict
     ) -> None:
-        """列出可用 Live2D 形象（与人设解耦的形象库）"""
+        """列出可用 Live2D 形象（与人设解耦的形象库）
+
+        附带 current = 当前正在用的形象名，前端据此高亮。
+        """
         context = self.client_contexts[client_uid]
         try:
             path = context.live2d_model.model_dict_path
             content = context.live2d_model._load_file_content(path)
             model_dict = json.loads(content)
+            try:
+                current = (context.live2d_model.model_info or {}).get("name", "")
+            except Exception:  # noqa: BLE001
+                current = ""
             models = [
                 {
                     "name": m.get("name", ""),
                     "url": m.get("url", ""),
                     "description": m.get("description", ""),
+                    "current": m.get("name", "") == current,
                 }
                 for m in model_dict
                 if m.get("name")
             ]
             await websocket.send_text(
-                json.dumps({"type": "model-list", "models": models})
+                json.dumps(
+                    {"type": "model-list", "models": models, "current": current},
+                    ensure_ascii=False,
+                )
             )
         except Exception as e:
             logger.error(f"Error fetching models: {e}")
